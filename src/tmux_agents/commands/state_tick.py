@@ -8,6 +8,7 @@ subprocesses for per-window `@state_fg` are batched (`source-file -`)
 and skipped entirely when the window/letter set hasn't changed since
 the last tick — most ticks are no-ops on that path.
 """
+
 from __future__ import annotations
 import argparse
 import dataclasses
@@ -16,9 +17,20 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from tmux_agents import tmux, paths, phase, windows, state, theme, overview, registry, logging_setup
+from tmux_agents import (
+    tmux,
+    paths,
+    phase,
+    windows,
+    state,
+    theme,
+    overview,
+    registry,
+    logging_setup,
+)
 
 logger = logging.getLogger(__name__)
+
 
 def _read_session_id(worktree: Path, pane_id: str) -> str | None:
     f = paths.worktree_session_id_file(worktree, pane_id)
@@ -32,6 +44,7 @@ def _read_session_id(worktree: Path, pane_id: str) -> str | None:
         return None
     return sid
 
+
 def _read_phase(state_file: Path) -> str:
     # The hook also writes `updated_at`; ignored today (reserved for the
     # "waiting duration in overview" BACKLOG item).
@@ -39,6 +52,7 @@ def _read_phase(state_file: Path) -> str:
     if not isinstance(j, dict):
         return phase.IDLE
     return j.get("phase", phase.IDLE)
+
 
 def _prune_windows_and_worktree_files(live_ids: set[str]) -> None:
     """Drop mapping files for dead windows + the per-worktree state/count files
@@ -52,15 +66,21 @@ def _prune_windows_and_worktree_files(live_ids: set[str]) -> None:
         try:
             mapping = windows.read_mapping(f.stem)
         except KeyError:
-            logger.debug("malformed mapping file for window %s, skipping worktree cleanup", f.stem)
+            logger.debug(
+                "malformed mapping file for window %s, skipping worktree cleanup",
+                f.stem,
+            )
             mapping = None
         if mapping is not None:
-            paths.worktree_state_file(mapping.host_worktree, mapping.pane_id).unlink(missing_ok=True)
+            paths.worktree_state_file(mapping.host_worktree, mapping.pane_id).unlink(
+                missing_ok=True
+            )
             shutil.rmtree(
                 paths.worktree_pending_dir(mapping.host_worktree, mapping.pane_id),
                 ignore_errors=True,
             )
         f.unlink(missing_ok=True)
+
 
 def main(argv: list[str] | None = None) -> int:
     logging_setup.setup_logging()
@@ -78,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
         # window X for one tick (mapping.pane_id wouldn't match any set).
         logger.warning(
             "window_pane_map failed: rc=%s stderr=%r stdout=%r",
-            e.returncode, e.stderr, e.stdout,
+            e.returncode,
+            e.stderr,
+            e.stdout,
         )
         return 0
     try:
@@ -88,7 +110,9 @@ def main(argv: list[str] | None = None) -> int:
         # window list here would let the prune below wipe live mappings.
         logger.warning(
             "list_windows failed: rc=%s stderr=%r stdout=%r",
-            e.returncode, e.stderr, e.stdout,
+            e.returncode,
+            e.stderr,
+            e.stdout,
         )
         return 0
     live_ids = {w.id for w in wins}
@@ -104,7 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     if suspicious:
         logger.warning(
             "tick.start live_ids=%s existing=%s about_to_prune=%s",
-            sorted(live_ids), existing, suspicious,
+            sorted(live_ids),
+            existing,
+            suspicious,
         )
 
     counts = overview.empty_counts()
@@ -129,7 +155,9 @@ def main(argv: list[str] | None = None) -> int:
             ph = _read_phase(sf) if sf.exists() else (mapping.phase_hint or phase.IDLE)
             counts_bz = registry.scan(mapping.host_worktree, mapping.pane_id, now=now)
             letter = phase.derive_letter(
-                ph, b_count=counts_bz.background, z_count=counts_bz.sleeping,
+                ph,
+                b_count=counts_bz.background,
+                z_count=counts_bz.sleeping,
                 pane_alive=f"%{mapping.pane_id}" in panes.get(win.id, set()),
             )
             overlay = counts_bz.for_letter(letter)

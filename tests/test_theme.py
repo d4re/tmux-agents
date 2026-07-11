@@ -5,8 +5,13 @@ from tmux_agents import theme, state
 
 def test_dark_defaults_cover_all_states():
     assert set(theme.DARK_DEFAULTS) == {
-        state.RUNNING, state.WAITING, state.IDLE,
-        state.BACKGROUND, state.SLEEPING, state.ERRORED, state.STARTING,
+        state.RUNNING,
+        state.WAITING,
+        state.IDLE,
+        state.BACKGROUND,
+        state.SLEEPING,
+        state.ERRORED,
+        state.STARTING,
     }
     for v in theme.DARK_DEFAULTS.values():
         assert v.startswith("#") and len(v) == 7
@@ -14,8 +19,13 @@ def test_dark_defaults_cover_all_states():
 
 def test_light_defaults_cover_all_states():
     assert set(theme.LIGHT_DEFAULTS) == {
-        state.RUNNING, state.WAITING, state.IDLE,
-        state.BACKGROUND, state.SLEEPING, state.ERRORED, state.STARTING,
+        state.RUNNING,
+        state.WAITING,
+        state.IDLE,
+        state.BACKGROUND,
+        state.SLEEPING,
+        state.ERRORED,
+        state.STARTING,
     }
     for v in theme.LIGHT_DEFAULTS.values():
         assert v.startswith("#") and len(v) == 7
@@ -85,9 +95,7 @@ def test_load_missing_mode_defaults_to_dark(tmp_config_dir):
 
 def test_load_merges_color_overrides(tmp_config_dir):
     (tmp_config_dir / "theme.toml").write_text(
-        'mode = "dark"\n'
-        '[colors]\n'
-        'waiting = "#ff00ff"\n'
+        'mode = "dark"\n[colors]\nwaiting = "#ff00ff"\n'
     )
     p = theme.load()
     assert p.fg[state.WAITING] == "#ff00ff"
@@ -95,10 +103,7 @@ def test_load_merges_color_overrides(tmp_config_dir):
 
 
 def test_load_rejects_invalid_hex_with_warning(tmp_config_dir, caplog):
-    (tmp_config_dir / "theme.toml").write_text(
-        '[colors]\n'
-        'waiting = "not-a-color"\n'
-    )
+    (tmp_config_dir / "theme.toml").write_text('[colors]\nwaiting = "not-a-color"\n')
     with caplog.at_level(logging.WARNING, logger="tmux_agents.theme"):
         p = theme.load()
     assert p.fg[state.WAITING] == theme.DARK_DEFAULTS[state.WAITING]
@@ -107,10 +112,7 @@ def test_load_rejects_invalid_hex_with_warning(tmp_config_dir, caplog):
 
 
 def test_load_accepts_3_char_hex_only_if_rrggbb(tmp_config_dir, caplog):
-    (tmp_config_dir / "theme.toml").write_text(
-        '[colors]\n'
-        'idle = "#abc"\n'
-    )
+    (tmp_config_dir / "theme.toml").write_text('[colors]\nidle = "#abc"\n')
     with caplog.at_level(logging.WARNING, logger="tmux_agents.theme"):
         p = theme.load()
     assert p.fg[state.IDLE] == theme.DARK_DEFAULTS[state.IDLE]
@@ -134,5 +136,3 @@ def test_reset_cache_causes_reload(tmp_config_dir):
     second = theme.get_palette()
     assert second is not first
     assert second.fg == theme.LIGHT_DEFAULTS
-
-

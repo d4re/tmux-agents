@@ -59,7 +59,12 @@ def test_bg_shell_counts_as_background_then_times_out(tmp_path):
     created = 1000.0
     _mark(d, "bg-shell__sh1", mtime=created)
     assert registry.scan(tmp_path, "23", now=created + 60).background == 1
-    assert registry.scan(tmp_path, "23", now=created + registry.BG_SHELL_TTL + 1).background == 0
+    assert (
+        registry.scan(
+            tmp_path, "23", now=created + registry.BG_SHELL_TTL + 1
+        ).background
+        == 0
+    )
 
 
 def test_subagent_counts_as_background(tmp_path):

@@ -2,6 +2,7 @@
 `tmux_agents` logger writes to paths.state_dir()/tmux-agents.log.
 Idempotent — re-entry is a no-op. CLI error helper writes to stderr
 AND logs at ERROR via the caller's module logger."""
+
 from __future__ import annotations
 import logging
 import logging.handlers

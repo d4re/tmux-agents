@@ -4,6 +4,7 @@ Used by both the host-side pump and the in-container relay.
 Importable by tests; also concatenated as source onto the inlined
 `python3 -c` invocations at runtime.
 """
+
 import struct
 import threading
 
@@ -75,6 +76,7 @@ def splice(raw_sock, framed_in, framed_out, *, buf_size: int = 16384) -> None:
     Returns when either side has signalled close. Does not close `raw_sock`.
     """
     import sys
+
     done = threading.Event()
 
     def raw_to_framed():
@@ -117,6 +119,7 @@ def splice(raw_sock, framed_in, framed_out, *, buf_size: int = 16384) -> None:
     t2.start()
     done.wait()
     import socket
+
     try:
         raw_sock.shutdown(socket.SHUT_RDWR)
     except OSError:

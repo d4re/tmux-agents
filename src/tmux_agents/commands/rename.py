@@ -7,6 +7,7 @@ branch is supplied at creation. `--from-hook` (wired to tmux's
 `pane-title-changed`) skips pinned windows so manually-named windows
 keep their label; it also skips unknown windows, the ctrl window, and
 empty titles."""
+
 import argparse
 import logging
 from tmux_agents import logging_setup, tmux
@@ -19,16 +20,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent-rename")
     parser.add_argument("--window-id", required=True)
     parser.add_argument(
-        "new_name", nargs="?", default="",
+        "new_name",
+        nargs="?",
+        default="",
         help="new branch name (will be prefixed with <repo>:)",
     )
     parser.add_argument(
-        "--from-hook", action="store_true",
+        "--from-hook",
+        action="store_true",
         help="hook mode: skip silently if window is missing/ctrl/pinned, or new_name is empty",
     )
     args = parser.parse_args(argv)
 
-    win = next((w for w in tmux.list_windows(tmux.SESSION) if w.id == args.window_id), None)
+    win = next(
+        (w for w in tmux.list_windows(tmux.SESSION) if w.id == args.window_id), None
+    )
     if win is None:
         if args.from_hook:
             return 0

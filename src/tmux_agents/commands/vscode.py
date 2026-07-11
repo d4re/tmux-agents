@@ -6,6 +6,7 @@ URI scheme so we reattach to whichever container is already running
 full `devcontainer up` path — symmetric across `container = "name"`
 and `devcontainer = true` projects, no rebuild, no second container.
 """
+
 from __future__ import annotations
 import argparse
 import logging

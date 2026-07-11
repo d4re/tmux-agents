@@ -27,6 +27,7 @@ DEFAULT_UP_CMD = "cd {repo} && devcontainer up --workspace-folder ."
 # Fixture-based smoke tests (use the bundled projects_example.toml)
 # ---------------------------------------------------------------------------
 
+
 def test_load_returns_all_projects(fixtures_dir):
     projects = config.load(fixtures_dir / "projects_example.toml")
     assert set(projects) == {"api", "scripts"}
@@ -58,7 +59,10 @@ def test_substitute_container(fixtures_dir):
     assert p.workdir_for(None) == "/work"
     assert p.workdir_for("feat-x") == "/work/.worktrees/feat-x"
     cmd = p.substitute(p.exec_cmd, branch="feat-x")
-    assert cmd == "docker exec -it api-devcontainer bash -lc 'cd /work/.worktrees/feat-x && claude'"
+    assert (
+        cmd
+        == "docker exec -it api-devcontainer bash -lc 'cd /work/.worktrees/feat-x && claude'"
+    )
 
 
 def test_substitute_host_only(fixtures_dir):
@@ -71,23 +75,35 @@ def test_substitute_host_only(fixtures_dir):
 
 def test_substitute_up_cmd(fixtures_dir):
     p = config.load(fixtures_dir / "projects_example.toml")["api"]
-    assert p.substitute(p.up_cmd, branch=None) == "cd /Users/remi/dev/api && devcontainer up --workspace-folder ."
+    assert (
+        p.substitute(p.up_cmd, branch=None)
+        == "cd /Users/remi/dev/api && devcontainer up --workspace-folder ."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Validation errors
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("body,match", [
-    # Missing required `repo`:
-    ('[foo]\nexec_cmd = "claude"\n', "repo"),
-    # Both container and devcontainer set:
-    ('[a]\nrepo = "/x"\nexec_cmd = "c"\ncontainer = "n"\ndevcontainer = true\n',
-     "either 'container' or 'devcontainer"),
-    # `user` field with an explicit exec_cmd is a contradiction:
-    ('[a]\nrepo = "/x"\ndevcontainer = true\nuser = "node"\nexec_cmd = "custom"\n',
-     "user"),
-], ids=["missing_repo", "container_and_devcontainer", "user_with_custom_exec_cmd"])
+
+@pytest.mark.parametrize(
+    "body,match",
+    [
+        # Missing required `repo`:
+        ('[foo]\nexec_cmd = "claude"\n', "repo"),
+        # Both container and devcontainer set:
+        (
+            '[a]\nrepo = "/x"\nexec_cmd = "c"\ncontainer = "n"\ndevcontainer = true\n',
+            "either 'container' or 'devcontainer",
+        ),
+        # `user` field with an explicit exec_cmd is a contradiction:
+        (
+            '[a]\nrepo = "/x"\ndevcontainer = true\nuser = "node"\nexec_cmd = "custom"\n',
+            "user",
+        ),
+    ],
+    ids=["missing_repo", "container_and_devcontainer", "user_with_custom_exec_cmd"],
+)
 def test_load_raises_config_error(tmp_path, body, match):
     p = _write(tmp_path, body)
     with pytest.raises(config.ConfigError, match=match):
@@ -127,8 +143,11 @@ DEFAULT_CASES = [
 ]
 
 
-@pytest.mark.parametrize("body,exec_cmd,up_cmd", DEFAULT_CASES,
-                         ids=["host_only", "devcontainer", "explicit_container", "no_ssh_forward"])
+@pytest.mark.parametrize(
+    "body,exec_cmd,up_cmd",
+    DEFAULT_CASES,
+    ids=["host_only", "devcontainer", "explicit_container", "no_ssh_forward"],
+)
 def test_default_exec_and_up_cmd(tmp_path, body, exec_cmd, up_cmd):
     proj = next(iter(config.load(_write(tmp_path, body)).values()))
     assert proj.exec_cmd == exec_cmd
@@ -136,24 +155,31 @@ def test_default_exec_and_up_cmd(tmp_path, body, exec_cmd, up_cmd):
 
 
 # Explicit user/exec_cmd overrides bypass the default-template logic.
-@pytest.mark.parametrize("body,assertion", [
-    # Explicit exec_cmd wins over default.
-    (
-        '[a]\nrepo = "/x"\ndevcontainer = true\nexec_cmd = "docker exec -it -u node {container} zsh"\n',
-        lambda p: p.exec_cmd == "docker exec -it -u node {container} zsh",
-    ),
-    # Explicit up_cmd wins over default.
-    (
-        '[a]\nrepo = "/x"\ndevcontainer = true\nup_cmd = "echo custom"\n',
-        lambda p: p.up_cmd == "echo custom",
-    ),
-    # forward_ssh_agent=true with a custom exec_cmd: template is left alone.
-    (
-        '[a]\nrepo = "/x"\ndevcontainer = true\nforward_ssh_agent = true\n'
-        'exec_cmd = "docker exec -it {container} zsh"\n',
-        lambda p: p.exec_cmd == "docker exec -it {container} zsh" and p.forward_ssh_agent is True,
-    ),
-], ids=["explicit_exec_cmd", "explicit_up_cmd", "custom_exec_cmd_unaltered"])
+@pytest.mark.parametrize(
+    "body,assertion",
+    [
+        # Explicit exec_cmd wins over default.
+        (
+            '[a]\nrepo = "/x"\ndevcontainer = true\nexec_cmd = "docker exec -it -u node {container} zsh"\n',
+            lambda p: p.exec_cmd == "docker exec -it -u node {container} zsh",
+        ),
+        # Explicit up_cmd wins over default.
+        (
+            '[a]\nrepo = "/x"\ndevcontainer = true\nup_cmd = "echo custom"\n',
+            lambda p: p.up_cmd == "echo custom",
+        ),
+        # forward_ssh_agent=true with a custom exec_cmd: template is left alone.
+        (
+            '[a]\nrepo = "/x"\ndevcontainer = true\nforward_ssh_agent = true\n'
+            'exec_cmd = "docker exec -it {container} zsh"\n',
+            lambda p: (
+                p.exec_cmd == "docker exec -it {container} zsh"
+                and p.forward_ssh_agent is True
+            ),
+        ),
+    ],
+    ids=["explicit_exec_cmd", "explicit_up_cmd", "custom_exec_cmd_unaltered"],
+)
 def test_explicit_overrides_default(tmp_path, body, assertion):
     proj = next(iter(config.load(_write(tmp_path, body)).values()))
     assert assertion(proj)
@@ -163,15 +189,22 @@ def test_explicit_overrides_default(tmp_path, body, assertion):
 # `user` field: rewrites -u <name> in the default template
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("body,expected_user,expected_flag", [
-    # devcontainer + user override:
-    ('[a]\nrepo = "/x"\ndevcontainer = true\nuser = "node"\n', "node", "-u node"),
-    # devcontainer + default:
-    ('[a]\nrepo = "/x"\ndevcontainer = true\n', None, "-u vscode"),
-    # explicit container + user override:
-    ('[a]\nrepo = "/x"\ncontainer = "foo"\ncontainer_workdir = "/w"\nuser = "node"\n',
-     "node", "-u node"),
-])
+
+@pytest.mark.parametrize(
+    "body,expected_user,expected_flag",
+    [
+        # devcontainer + user override:
+        ('[a]\nrepo = "/x"\ndevcontainer = true\nuser = "node"\n', "node", "-u node"),
+        # devcontainer + default:
+        ('[a]\nrepo = "/x"\ndevcontainer = true\n', None, "-u vscode"),
+        # explicit container + user override:
+        (
+            '[a]\nrepo = "/x"\ncontainer = "foo"\ncontainer_workdir = "/w"\nuser = "node"\n',
+            "node",
+            "-u node",
+        ),
+    ],
+)
 def test_user_field_in_default_template(tmp_path, body, expected_user, expected_flag):
     proj = next(iter(config.load(_write(tmp_path, body)).values()))
     assert proj.user == expected_user
@@ -184,12 +217,25 @@ def test_user_field_in_default_template(tmp_path, body, expected_user, expected_
 # forward_ssh_agent flag — defaults true everywhere, can be turned off.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("body,expected", [
-    ('[a]\nrepo = "/x"\ndevcontainer = true\n', True),                              # devcontainer default
-    ('[a]\nrepo = "/x"\ncontainer = "foo"\ncontainer_workdir = "/w"\n', True),      # explicit container default
-    ('[scripts]\nrepo = "/x"\nexec_cmd = "claude"\n', True),                        # host-only default (inert)
-    ('[a]\nrepo = "/x"\ndevcontainer = true\nforward_ssh_agent = false\n', False),  # explicit off
-])
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ('[a]\nrepo = "/x"\ndevcontainer = true\n', True),  # devcontainer default
+        (
+            '[a]\nrepo = "/x"\ncontainer = "foo"\ncontainer_workdir = "/w"\n',
+            True,
+        ),  # explicit container default
+        (
+            '[scripts]\nrepo = "/x"\nexec_cmd = "claude"\n',
+            True,
+        ),  # host-only default (inert)
+        (
+            '[a]\nrepo = "/x"\ndevcontainer = true\nforward_ssh_agent = false\n',
+            False,
+        ),  # explicit off
+    ],
+)
 def test_forward_ssh_agent_flag(tmp_path, body, expected):
     proj = next(iter(config.load(_write(tmp_path, body)).values()))
     assert proj.forward_ssh_agent is expected
@@ -199,31 +245,38 @@ def test_forward_ssh_agent_flag(tmp_path, body, expected):
 # devcontainer workdir resolution
 # ---------------------------------------------------------------------------
 
+
 def test_devcontainer_workdir_defaults_to_workspaces_basename(tmp_path):
-    p = _write(tmp_path,
-        '[webapp-gateway]\n'
+    p = _write(
+        tmp_path,
+        "[webapp-gateway]\n"
         'repo = "/Users/me/dev/webapp-gateway-service"\n'
-        'devcontainer = true\n'
-        'exec_cmd = "docker exec -it {container} bash -lc \'cd {workdir} && claude\'"\n'
+        "devcontainer = true\n"
+        "exec_cmd = \"docker exec -it {container} bash -lc 'cd {workdir} && claude'\"\n",
     )
     proj = config.load(p)["webapp-gateway"]
     assert proj.workdir_for(None) == "/workspaces/webapp-gateway-service"
-    assert proj.workdir_for("feat-x") == "/workspaces/webapp-gateway-service/.worktrees/feat-x"
+    assert (
+        proj.workdir_for("feat-x")
+        == "/workspaces/webapp-gateway-service/.worktrees/feat-x"
+    )
 
 
 def test_devcontainer_explicit_workdir_overrides_default(tmp_path):
-    p = _write(tmp_path,
+    p = _write(
+        tmp_path,
         '[a]\nrepo = "/Users/me/dev/a"\ndevcontainer = true\n'
         'container_workdir = "/custom/path"\n'
-        'exec_cmd = "c"\n'
+        'exec_cmd = "c"\n',
     )
     assert config.load(p)["a"].workdir_for(None) == "/custom/path"
 
 
 def test_devcontainer_field_marks_is_container(tmp_path):
-    p = _write(tmp_path,
+    p = _write(
+        tmp_path,
         '[a]\nrepo = "/Users/me/dev/a"\ndevcontainer = true\n'
-        'exec_cmd = "docker exec -it {container} bash"\n'
+        'exec_cmd = "docker exec -it {container} bash"\n',
     )
     proj = config.load(p)["a"]
     assert proj.devcontainer is True
@@ -235,10 +288,12 @@ def test_devcontainer_field_marks_is_container(tmp_path):
 # substitute(): {workdir}, {container}, {resume_args} placeholders
 # ---------------------------------------------------------------------------
 
+
 def test_substitute_container_name_override(tmp_path):
-    p = _write(tmp_path,
+    p = _write(
+        tmp_path,
         '[a]\nrepo = "/Users/me/dev/a"\ndevcontainer = true\n'
-        'exec_cmd = "docker exec -it {container} bash -lc \'cd {workdir} && claude\'"\n'
+        "exec_cmd = \"docker exec -it {container} bash -lc 'cd {workdir} && claude'\"\n",
     )
     proj = config.load(p)["a"]
     cmd = proj.substitute(proj.exec_cmd, branch=None, container_name="brave_benz")
@@ -248,29 +303,42 @@ def test_substitute_container_name_override(tmp_path):
 # (body, resume_args, must_contain, must_not_contain)
 RESUME_ARGS_CASES = [
     # Default container template + resume.
-    ('[api]\nrepo = "/x/api"\ndevcontainer = true\n',
-     " --resume X",  "exec claude --resume X",  None),
+    (
+        '[api]\nrepo = "/x/api"\ndevcontainer = true\n',
+        " --resume X",
+        "exec claude --resume X",
+        None,
+    ),
     # Default container template + empty resume.
-    ('[api]\nrepo = "/x/api"\ndevcontainer = true\n',
-     "",             "exec claude'",            "--resume"),
+    ('[api]\nrepo = "/x/api"\ndevcontainer = true\n', "", "exec claude'", "--resume"),
     # Default host-only template + resume.
-    ('[scripts]\nrepo = "/x/scripts"\n',
-     " --resume X",  "exec claude --resume X",  None),
+    ('[scripts]\nrepo = "/x/scripts"\n', " --resume X", "exec claude --resume X", None),
     # Default host-only template + empty resume.
-    ('[scripts]\nrepo = "/x/scripts"\n',
-     "",             "exec claude",             "--resume"),
+    ('[scripts]\nrepo = "/x/scripts"\n', "", "exec claude", "--resume"),
     # User-defined template using {resume_args}.
-    ('[scripts]\nrepo = "/x/scripts"\n'
-     'exec_cmd = "cd {workdir} && claude{resume_args}"\n',
-     " --resume Y",  "claude --resume Y",       None),
+    (
+        '[scripts]\nrepo = "/x/scripts"\n'
+        'exec_cmd = "cd {workdir} && claude{resume_args}"\n',
+        " --resume Y",
+        "claude --resume Y",
+        None,
+    ),
 ]
 
 
-@pytest.mark.parametrize("body,resume_args,must_contain,must_not_contain", RESUME_ARGS_CASES)
-def test_substitute_resume_args(tmp_path, body, resume_args, must_contain, must_not_contain):
+@pytest.mark.parametrize(
+    "body,resume_args,must_contain,must_not_contain", RESUME_ARGS_CASES
+)
+def test_substitute_resume_args(
+    tmp_path, body, resume_args, must_contain, must_not_contain
+):
     proj = next(iter(config.load(_write(tmp_path, body)).values()))
-    cmd = proj.substitute(proj.exec_cmd, branch=None,
-                          container_name="anycontainer", resume_args=resume_args)
+    cmd = proj.substitute(
+        proj.exec_cmd,
+        branch=None,
+        container_name="anycontainer",
+        resume_args=resume_args,
+    )
     assert must_contain in cmd
     if must_not_contain is not None:
         assert must_not_contain not in cmd
@@ -280,10 +348,14 @@ def test_substitute_resume_args(tmp_path, body, resume_args, must_contain, must_
 # base_branch field
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("body,expected", [
-    ('[svc]\nrepo = "/x/svc"\nbase_branch = "develop"\n', "develop"),
-    ('[svc]\nrepo = "/x/svc"\n',                          None),
-])
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ('[svc]\nrepo = "/x/svc"\nbase_branch = "develop"\n', "develop"),
+        ('[svc]\nrepo = "/x/svc"\n', None),
+    ],
+)
 def test_base_branch_field(tmp_path, body, expected):
     proj = config.load(_write(tmp_path, body))["svc"]
     assert proj.base_branch == expected
@@ -292,6 +364,7 @@ def test_base_branch_field(tmp_path, body, expected):
 # ---------------------------------------------------------------------------
 # Top-level non-project settings (e.g. code_path)
 # ---------------------------------------------------------------------------
+
 
 def test_loader_skips_top_level_scalars(tmp_path):
     body = 'code_path = "/Applications/VS Code/code"\n[svc]\nrepo = "/x/svc"\n'

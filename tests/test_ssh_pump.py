@@ -12,7 +12,8 @@ def test_supervise_exits_when_ssh_auth_sock_unset(monkeypatch):
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     spawn_calls = []
     rc = pump.supervise(
-        "c", "vscode",
+        "c",
+        "vscode",
         run_one=lambda c, u: spawn_calls.append((c, u)) or 0,
         container_alive=lambda c: True,
         sleep=lambda s: None,
@@ -24,7 +25,8 @@ def test_supervise_exits_when_ssh_auth_sock_unset(monkeypatch):
 def test_supervise_exits_when_relay_signals_duplicate(monkeypatch):
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/x")
     rc = pump.supervise(
-        "c", "vscode",
+        "c",
+        "vscode",
         run_one=lambda c, u: f.EXIT_DUPLICATE,
         container_alive=lambda c: True,
         sleep=lambda s: None,
@@ -37,7 +39,8 @@ def test_supervise_exits_when_container_gone(monkeypatch):
     don't busy-loop trying to docker exec into a dead container."""
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/x")
     rc = pump.supervise(
-        "c", "vscode",
+        "c",
+        "vscode",
         run_one=lambda c, u: 0,
         container_alive=lambda c: False,
         sleep=lambda s: None,
@@ -45,20 +48,26 @@ def test_supervise_exits_when_container_gone(monkeypatch):
     assert rc == 0
 
 
-def test_supervise_retries_on_transient_failure_then_exits_when_container_dies(monkeypatch):
+def test_supervise_retries_on_transient_failure_then_exits_when_container_dies(
+    monkeypatch,
+):
     """Three transient failures (container alive), then container goes away."""
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/x")
     run_calls = 0
     alive_seq = [True, True, False]
     sleeps: list[float] = []
+
     def run_one(c, u):
         nonlocal run_calls
         run_calls += 1
         return 0  # treat as transient
+
     def container_alive(c):
         return alive_seq.pop(0)
+
     rc = pump.supervise(
-        "c", "vscode",
+        "c",
+        "vscode",
         run_one=run_one,
         container_alive=container_alive,
         sleep=sleeps.append,
@@ -73,11 +82,14 @@ def test_supervise_caps_backoff(monkeypatch):
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/x")
     sleeps: list[float] = []
     iterations = {"n": 0}
+
     def container_alive(c):
         iterations["n"] += 1
         return iterations["n"] < 10  # keep alive for 9 iterations
+
     pump.supervise(
-        "c", "vscode",
+        "c",
+        "vscode",
         run_one=lambda c, u: 0,
         container_alive=container_alive,
         sleep=sleeps.append,
@@ -103,10 +115,13 @@ def test_run_pump_loop_round_trips_frames_to_host_uds(tmp_sock_dir, monkeypatch)
     #   stdout pipe = "what the in-container relay writes" (framed bytes coming TO pump)
     #   stdin pipe  = "what the pump writes to the relay" (framed bytes going FROM pump)
     relay_to_pump_r, relay_to_pump_w = _pipe_pair()  # we write, pump reads as stdout
-    pump_to_relay_r, pump_to_relay_w = _pipe_pair()  # pump writes, we read as stdin sink
+    pump_to_relay_r, pump_to_relay_w = (
+        _pipe_pair()
+    )  # pump writes, we read as stdin sink
 
     # Server thread: accept the pump's connection to auth.sock, echo bytes.
     received = []
+
     def echo_server():
         conn, _ = listener.accept()
         try:
@@ -118,6 +133,7 @@ def test_run_pump_loop_round_trips_frames_to_host_uds(tmp_sock_dir, monkeypatch)
                 conn.sendall(b"ack:" + data)
         finally:
             conn.close()
+
     threading.Thread(target=echo_server, daemon=True).start()
 
     # Run the pump loop in a thread.
@@ -150,16 +166,19 @@ def test_run_pump_loop_round_trips_frames_to_host_uds(tmp_sock_dir, monkeypatch)
     t.join(timeout=2)
     assert not t.is_alive()
     listener.close()
-    pump_to_relay_w.close(); relay_to_pump_r.close()
+    pump_to_relay_w.close()
+    relay_to_pump_r.close()
 
 
 def test_deliver_relay_pipes_both_source_files(monkeypatch):
     """Both framing + relay source are delivered into the container via
     `docker exec ... cat >`, read verbatim from package data (no splicing)."""
     calls = []
+
     def fake_run(cmd, **kw):
         calls.append((cmd, kw.get("input")))
         return MagicMock(returncode=0)
+
     monkeypatch.setattr(subprocess, "run", fake_run)
     pump._deliver_relay("api", "vscode")
     assert len(calls) == 2
@@ -178,34 +197,50 @@ def test_run_one_relay_runs_delivered_file(monkeypatch):
     monkeypatch.setattr(pump, "_deliver_relay", lambda c, u: None)
     monkeypatch.setattr(pump, "run_pump_loop", lambda out, inp: None)
     captured = {}
+
     class FakeProc:
         def __init__(self):
             self.stdout = object()
             self.stdin = MagicMock()
+
         def terminate(self):
             pass
+
         def kill(self):
             pass
+
         def wait(self, timeout=None):
             return 0
+
     def fake_popen(cmd, **kw):
         captured["cmd"] = cmd
         return FakeProc()
+
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     rc = pump._run_one_relay("api", "vscode")
     assert rc == 0
     assert captured["cmd"] == [
-        "docker", "exec", "-i", "-u", "vscode", "api",
-        "python3", "/tmp/tmux-agents-relay/_ssh_relay_script.py",
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "vscode",
+        "api",
+        "python3",
+        "/tmp/tmux-agents-relay/_ssh_relay_script.py",
     ]
 
 
 def test_run_one_relay_returns_1_when_delivery_fails(monkeypatch):
     """Delivery failure (e.g. container mid-restart) is retryable, not fatal."""
+
     def boom(c, u):
         raise subprocess.CalledProcessError(1, ["docker", "exec"])
+
     monkeypatch.setattr(pump, "_deliver_relay", boom)
+
     def no_popen(*a, **k):
         raise AssertionError("relay should not run when delivery fails")
+
     monkeypatch.setattr(subprocess, "Popen", no_popen)
     assert pump._run_one_relay("api", "vscode") == 1

@@ -24,10 +24,13 @@ def _write_mapping(window_id: str, **kwargs) -> None:
 
 def _stub_subprocess(monkeypatch, *, which_returns: str | None = CODE_BIN):
     called: list[list[str]] = []
+
     def fake_run(argv, check=True, **kw):
         called.append(argv)
         import subprocess
+
         return subprocess.CompletedProcess(argv, 0, "", "")
+
     monkeypatch.setattr(vscode.subprocess, "run", fake_run)
     monkeypatch.setattr(vscode.shutil, "which", lambda _: which_returns)
     monkeypatch.setattr(tmux, "display_message", lambda *_: None)
@@ -49,7 +52,9 @@ def test_host_project_opens_worktree_path(monkeypatch, tmp_config_dir, tmp_path)
     assert called == [[CODE_BIN, str(worktree)]]
 
 
-def test_container_project_builds_attached_container_uri(monkeypatch, tmp_config_dir, tmp_path):
+def test_container_project_builds_attached_container_uri(
+    monkeypatch, tmp_config_dir, tmp_path
+):
     repo = tmp_path / "svc"
     repo.mkdir()
     worktree = repo / ".worktrees" / "bug"
@@ -66,11 +71,15 @@ def test_container_project_builds_attached_container_uri(monkeypatch, tmp_config
 
     assert rc == 0
     expected_hex = b"svc-dev".hex()
-    expected_uri = f"vscode-remote://attached-container+{expected_hex}/work/.worktrees/bug"
+    expected_uri = (
+        f"vscode-remote://attached-container+{expected_hex}/work/.worktrees/bug"
+    )
     assert called == [[CODE_BIN, "--folder-uri", expected_uri]]
 
 
-def test_devcontainer_project_uses_workspaces_path(monkeypatch, tmp_config_dir, tmp_path):
+def test_devcontainer_project_uses_workspaces_path(
+    monkeypatch, tmp_config_dir, tmp_path
+):
     repo = tmp_path / "web"
     repo.mkdir()
     worktree = repo / ".worktrees" / "x"
@@ -93,7 +102,9 @@ def test_devcontainer_project_uses_workspaces_path(monkeypatch, tmp_config_dir, 
     assert called == [[CODE_BIN, "--folder-uri", expected_uri]]
 
 
-def test_container_project_with_no_running_container_fails(monkeypatch, tmp_config_dir, tmp_path):
+def test_container_project_with_no_running_container_fails(
+    monkeypatch, tmp_config_dir, tmp_path
+):
     repo = tmp_path / "svc"
     repo.mkdir()
     worktree = repo / ".worktrees" / "x"
@@ -130,7 +141,9 @@ def test_missing_code_cli_and_no_fallback_fails(monkeypatch, tmp_config_dir, tmp
     assert any("code_path" in m for m in messages)
 
 
-def test_code_path_override_used_when_not_on_path(monkeypatch, tmp_config_dir, tmp_path):
+def test_code_path_override_used_when_not_on_path(
+    monkeypatch, tmp_config_dir, tmp_path
+):
     repo = tmp_path / "api"
     repo.mkdir()
     worktree = repo / ".worktrees" / "x"

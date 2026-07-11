@@ -18,6 +18,7 @@ script is rewritten unconditionally on every provision call (cheap,
 idempotent, and ensures dev iteration on the script body propagates
 even without a version bump).
 """
+
 from __future__ import annotations
 import json
 from importlib import resources
@@ -30,7 +31,9 @@ _TMUX_AGENTS_VERSION = _pkg_version("tmux-agents")
 _SCRIPT_NAME = "write-state.sh"
 
 
-def _merge_hooks(existing: dict, template_hooks: dict, previously_versioned: bool) -> dict:
+def _merge_hooks(
+    existing: dict, template_hooks: dict, previously_versioned: bool
+) -> dict:
     """Append our hook groups per event.
 
     Versioned files (we wrote them previously): replace all groups for events
@@ -79,18 +82,25 @@ def provision_settings(worktree: Path, *, template_path: Path) -> bool:
     current: dict = paths.read_json_or(target, {})
 
     merged_hooks = _merge_hooks(
-        current.get("hooks", {}), template["hooks"],
+        current.get("hooks", {}),
+        template["hooks"],
         previously_versioned="_tmux_agents_version" in current,
     )
-    if (current.get("_tmux_agents_version") == _TMUX_AGENTS_VERSION
-            and current.get("tui") == template["tui"]
-            and current.get("hooks") == merged_hooks):
+    if (
+        current.get("_tmux_agents_version") == _TMUX_AGENTS_VERSION
+        and current.get("tui") == template["tui"]
+        and current.get("hooks") == merged_hooks
+    ):
         return False
 
-    paths.atomic_write_json(target, {
-        **current,
-        "_tmux_agents_version": _TMUX_AGENTS_VERSION,
-        "tui": template["tui"],
-        "hooks": merged_hooks,
-    }, indent=2)
+    paths.atomic_write_json(
+        target,
+        {
+            **current,
+            "_tmux_agents_version": _TMUX_AGENTS_VERSION,
+            "tui": template["tui"],
+            "hooks": merged_hooks,
+        },
+        indent=2,
+    )
     return True

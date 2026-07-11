@@ -92,18 +92,31 @@ def test_container_with_forward_ssh_execs_docker_with_socket(
 
     assert rc == 0
     assert chdirs == []  # container path does not chdir on host
-    assert execs == [(
-        "docker",
-        [
-            "docker", "exec", "-it",
-            "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE",
-            "-e", f"SSH_AUTH_SOCK={UDS_PATH}",
-            "-u", "vscode",
-            "-w", "/work/.worktrees/bug",
-            "svc-dev",
-            "bash", "-il",
-        ],
-    )]
+    assert execs == [
+        (
+            "docker",
+            [
+                "docker",
+                "exec",
+                "-it",
+                "-e",
+                "TERM",
+                "-e",
+                "COLORTERM",
+                "-e",
+                "TMUX_PANE",
+                "-e",
+                f"SSH_AUTH_SOCK={UDS_PATH}",
+                "-u",
+                "vscode",
+                "-w",
+                "/work/.worktrees/bug",
+                "svc-dev",
+                "bash",
+                "-il",
+            ],
+        )
+    ]
 
 
 def test_container_without_forward_ssh_omits_socket(
@@ -116,7 +129,7 @@ def test_container_without_forward_ssh_omits_socket(
     _write_projects(
         tmp_config_dir,
         f'[svc]\nrepo = "{repo}"\ncontainer = "svc-dev"\nup_cmd = "true"\n'
-        'forward_ssh_agent = false\n',
+        "forward_ssh_agent = false\n",
     )
     _write_mapping("@4", project="svc", branch="x", host_worktree=worktree)
     monkeypatch.setattr(container_mod, "current_name", lambda _: "svc-dev")
@@ -134,9 +147,7 @@ def test_container_without_forward_ssh_omits_socket(
     assert e_values == ["TERM", "COLORTERM", "TMUX_PANE"]
 
 
-def test_container_custom_user_overrides_default(
-    monkeypatch, tmp_config_dir, tmp_path
-):
+def test_container_custom_user_overrides_default(monkeypatch, tmp_config_dir, tmp_path):
     repo = tmp_path / "svc"
     repo.mkdir()
     worktree = repo / ".worktrees" / "x"
@@ -159,9 +170,7 @@ def test_container_custom_user_overrides_default(
     assert argv[u_index + 1] == "node"
 
 
-def test_devcontainer_uses_workspaces_workdir(
-    monkeypatch, tmp_config_dir, tmp_path
-):
+def test_devcontainer_uses_workspaces_workdir(monkeypatch, tmp_config_dir, tmp_path):
     repo = tmp_path / "web"
     repo.mkdir()
     worktree = repo / ".worktrees" / "x"
@@ -184,9 +193,7 @@ def test_devcontainer_uses_workspaces_workdir(
     assert argv[-3:] == ["vsc-web-abc123", "bash", "-il"]
 
 
-def test_missing_window_mapping_fails_with_message(
-    monkeypatch, tmp_config_dir
-):
+def test_missing_window_mapping_fails_with_message(monkeypatch, tmp_config_dir):
     _write_projects(tmp_config_dir, "")
     execs, _, messages = _stub_exec(monkeypatch)
 
@@ -197,12 +204,13 @@ def test_missing_window_mapping_fails_with_message(
     assert any("@99" in m for m in messages)
 
 
-def test_project_not_in_toml_fails_with_message(
-    monkeypatch, tmp_config_dir, tmp_path
-):
+def test_project_not_in_toml_fails_with_message(monkeypatch, tmp_config_dir, tmp_path):
     _write_projects(tmp_config_dir, "")
     _write_mapping(
-        "@8", project="ghost", branch="x", host_worktree=tmp_path / "nope",
+        "@8",
+        project="ghost",
+        branch="x",
+        host_worktree=tmp_path / "nope",
     )
     execs, _, messages = _stub_exec(monkeypatch)
 

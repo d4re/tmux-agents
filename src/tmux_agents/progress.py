@@ -3,6 +3,7 @@
 
 `Reporter` owns one output stream; `Stage` is its context-manager helper.
 `MultiReporter` fans out to N reporters for the restore broadcast case."""
+
 from __future__ import annotations
 import os
 import sys
@@ -20,7 +21,7 @@ _RESET = "\x1b[0m"
 
 _SYM_TO_PALETTE = {
     _SYM_INFO: state.STARTING,
-    _SYM_OK:   state.RUNNING,
+    _SYM_OK: state.RUNNING,
     _SYM_WARN: state.WAITING,
     _SYM_FAIL: state.ERRORED,
 }
@@ -46,7 +47,9 @@ class Stage:
         self.name = name
         self._start: float = 0.0
         self._suppress_ok = False  # set by skip/warn
-        self._pending_warn: str | None = None  # deferred; emitted in __exit__ with timing
+        self._pending_warn: str | None = (
+            None  # deferred; emitted in __exit__ with timing
+        )
 
     def info(self, detail: str) -> None:
         # In-progress line — no timing, emit immediately.

@@ -21,8 +21,15 @@ ACTIONS = [
     (
         "rename_at_agent",
         lambda: overview.rename_at(Cursor("agent", "@5")),
-        ["tmux", "-L", "agents", "command-prompt", "-p", "new branch name:",
-         "run-shell 'agent-rename --window-id @5 %%'"],
+        [
+            "tmux",
+            "-L",
+            "agents",
+            "command-prompt",
+            "-p",
+            "new branch name:",
+            "run-shell 'agent-rename --window-id @5 %%'",
+        ],
     ),
     (
         "restore_dead",
@@ -40,10 +47,14 @@ def test_action_invokes_tmux_argv(monkeypatch, name, action, expected):
     assert captured == [expected]
 
 
-@pytest.mark.parametrize("action", [
-    lambda: overview.kill_at(Cursor("header", "api")),
-    lambda: overview.rename_at(Cursor("header", "api")),
-], ids=["kill_at_header", "rename_at_header"])
+@pytest.mark.parametrize(
+    "action",
+    [
+        lambda: overview.kill_at(Cursor("header", "api")),
+        lambda: overview.rename_at(Cursor("header", "api")),
+    ],
+    ids=["kill_at_header", "rename_at_header"],
+)
 def test_action_on_header_is_noop(monkeypatch, action):
     captured = []
     monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))

@@ -1,13 +1,16 @@
 """`agent-layout` entry point. Toggles the persistent split/compact
 mode and rebuilds existing agent windows accordingly."""
+
 from __future__ import annotations
 import argparse
 from tmux_agents import overview, paths, tmux
+
 
 def _write(value: str) -> None:
     f = paths.layout_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(value)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent-layout")

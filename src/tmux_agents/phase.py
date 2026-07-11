@@ -5,6 +5,7 @@ module bridges the JSON `phase` field Claude hooks write into those codes,
 overlaying the background/sleeping item counts computed by `registry.scan`,
 using the priority rule X > W > R > B > Z > I > S.
 """
+
 from __future__ import annotations
 from tmux_agents import state
 
