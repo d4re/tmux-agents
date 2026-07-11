@@ -7,7 +7,6 @@ agent-new and agent-kill consume.
 from __future__ import annotations
 import logging
 import subprocess
-import sys
 from collections.abc import Callable, Iterable
 from tmux_agents import logging_setup
 

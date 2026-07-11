@@ -1,8 +1,10 @@
+import io
 from pathlib import Path
 from unittest.mock import MagicMock
 import subprocess
 import pytest
 from tmux_agents import worktree
+from tmux_agents.progress import Reporter
 
 # Capture the real _resolve_base before the autouse fixture replaces it.
 _REAL_RESOLVE_BASE = worktree._resolve_base
@@ -183,10 +185,6 @@ def test_list_existing_ignores_non_directory_entries(tmp_path):
     (base / "stray.zip").write_bytes(b"\x00")
     _make_worktree(base, "kept")
     assert worktree.list_existing(repo) == ["kept"]
-
-
-import io
-from tmux_agents.progress import Reporter
 
 
 def test_resolve_calls_stage_info_for_substeps(monkeypatch, tmp_path):

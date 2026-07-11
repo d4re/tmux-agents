@@ -9,7 +9,6 @@ keep their label; it also skips unknown windows, the ctrl window, and
 empty titles."""
 import argparse
 import logging
-import sys
 from tmux_agents import logging_setup, tmux
 
 logger = logging.getLogger(__name__)

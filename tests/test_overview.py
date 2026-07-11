@@ -67,8 +67,8 @@ def test_active_row_marked_with_arrow_prefix(monkeypatch):
     monkeypatch.setattr(tmux, "list_windows", lambda s: _active_windows())
     out = _render_plain(overview.build_rows({}))
     lines = out.splitlines()
-    active_line = next(l for l in lines if "2:api:bugfix-nav" in l)
-    inactive_line = next(l for l in lines if "1:api:feat-x" in l)
+    active_line = next(ln for ln in lines if "2:api:bugfix-nav" in ln)
+    inactive_line = next(ln for ln in lines if "1:api:feat-x" in ln)
     assert active_line.startswith("> ")
     assert inactive_line.startswith("  ")
     assert "\x1b[" not in out

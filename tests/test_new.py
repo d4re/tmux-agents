@@ -1,5 +1,4 @@
 import shlex
-import pytest
 from types import SimpleNamespace
 from tmux_agents.commands import new
 from tmux_agents import tmux, container, pickers, worktree, ssh_forward, phase
@@ -59,7 +58,7 @@ def _provision_env(monkeypatch, tmp_config_dir, tmp_path, *, warn=False, fail_co
     tests drive _provision directly via new.main(["--provision", ...]) without
     actually forking or closing file descriptors."""
     import os as _os
-    from tmux_agents import container, worktree, provisioning, ssh_forward, startup, tmux
+    from tmux_agents import container, worktree, provisioning, ssh_forward, startup
     from tmux_agents import windows as windows_mod
     repo, _ = _write_config(tmp_config_dir, tmp_path)
     cap = SimpleNamespace(respawns=[], static_texts=[], holds=[], states=[])
@@ -375,7 +374,7 @@ def test_new_provisions_settings_local_json(monkeypatch, tmp_config_dir, tmp_pat
     """_provision writes .claude/settings.local.json to the worktree."""
     import os as _os
     import json
-    from tmux_agents import container as container_mod, worktree as wt_mod
+    from tmux_agents import worktree as wt_mod
     from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
@@ -404,7 +403,7 @@ def test_new_provisions_settings_local_json(monkeypatch, tmp_config_dir, tmp_pat
 def test_new_provisioning_is_idempotent(monkeypatch, tmp_config_dir, tmp_path):
     """Running _provision twice on the same worktree must not rewrite the settings file."""
     import os as _os
-    from tmux_agents import container as container_mod, worktree as wt_mod
+    from tmux_agents import worktree as wt_mod
     from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
@@ -443,7 +442,7 @@ def _stub_ssh_pump_healthy_path(monkeypatch, *, has_python3=True, auth_sock="/tm
 
 def test_new_spawns_ssh_pump_for_container_project(monkeypatch, tmp_config_dir, tmp_path):
     """_provision calls maybe_spawn_pump with (container_name, user) for container projects."""
-    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path)
     pump_calls = []
     monkeypatch.setattr(
         ssh_forward, "maybe_spawn_pump",
@@ -459,7 +458,7 @@ def test_new_skips_pump_spawn_when_responsive_pump_already_running(
 ):
     """Idempotency: re-running _provision on a project with a healthy pump
     must not spawn a second pump (the bug that produced the zombie pile-up)."""
-    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path)
     spawned, killed = [], []
     _stub_ssh_pump_healthy_path(monkeypatch)
     monkeypatch.setattr(ssh_forward, "pump_pids_for", lambda c: [4242])
@@ -482,7 +481,7 @@ def test_new_kills_stale_pump_then_respawns_when_unresponsive(
     Must kill the stale pump first, then spawn a fresh one.
     Verified at the maybe_spawn_pump level: a PumpResult with killed_stale > 0
     is returned, confirming that stale pumps were detected and replaced."""
-    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path)
     results = []
     monkeypatch.setattr(
         ssh_forward, "maybe_spawn_pump",
@@ -562,7 +561,7 @@ def test_new_skips_ssh_pump_when_python3_missing_with_warning(
     """python3 missing → PumpResult("disabled_no_python") → stage warn → hold pane."""
     import logging
     from tmux_agents.ssh_forward import PumpResult
-    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path, warn=False)
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path, warn=False)
     # Override stub to emit a log warning (mimicking the real behavior).
     monkeypatch.setattr(
         ssh_forward, "maybe_spawn_pump",
@@ -583,7 +582,7 @@ def test_new_skips_ssh_pump_when_host_auth_sock_unset_with_warning(
     """No SSH_AUTH_SOCK → PumpResult("disabled_no_sock") → warning logged."""
     import logging
     from tmux_agents.ssh_forward import PumpResult
-    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path, warn=False)
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path, warn=False)
     monkeypatch.setattr(
         ssh_forward, "maybe_spawn_pump",
         lambda c, u: (

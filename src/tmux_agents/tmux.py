@@ -3,6 +3,7 @@ invocations here, not inline in callers."""
 from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 SESSION = "agents"
 CONTROL_WINDOW = "ctrl"

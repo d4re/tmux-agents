@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tmux_agents import config, container, paths, tmux, windows as windows_mod
+from tmux_agents import container, paths, tmux, windows as windows_mod
 from tmux_agents.commands import vscode
 
 CODE_BIN = "/usr/local/bin/code"
