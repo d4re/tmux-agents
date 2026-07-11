@@ -163,24 +163,24 @@ def test_color_emission_covers_all_four_symbols():
     pal = theme.get_palette()
 
     with r.stage("worktree") as st:
-        st.info("fetching origin/main")   # ▸ → S
+        st.info("fetching origin/main")  # ▸ → S
 
     # clean exit prints "✓ worktree" → R
     # (skip path would suppress the ✓; we want both ▸ and ✓ in output)
 
     with r.stage("hooks") as st:
-        st.warn("denied")                  # ! → W
+        st.warn("denied")  # ! → W
 
     with pytest.raises(RuntimeError):
         with r.stage("c"):
-            raise RuntimeError()           # ✗ → X
+            raise RuntimeError()  # ✗ → X
 
     text = out.getvalue()
     assert pal.ansi_fg[state.STARTING] in text  # ▸ is grey
-    assert pal.ansi_fg[state.RUNNING] in text   # ✓ is green
-    assert pal.ansi_fg[state.WAITING] in text   # ! is yellow
-    assert pal.ansi_fg[state.ERRORED] in text   # ✗ is red
-    assert "\x1b[0m" in text                    # reset after symbol
+    assert pal.ansi_fg[state.RUNNING] in text  # ✓ is green
+    assert pal.ansi_fg[state.WAITING] in text  # ! is yellow
+    assert pal.ansi_fg[state.ERRORED] in text  # ✗ is red
+    assert "\x1b[0m" in text  # reset after symbol
 
 
 def test_color_off_emits_no_ansi():

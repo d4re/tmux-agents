@@ -4,6 +4,7 @@ Keep this module free of any tmux or project knowledge — it only wraps the
 fzf-backed primitives (pick, yes/no, free text, pick-or-create) that
 agent-new and agent-kill consume.
 """
+
 from __future__ import annotations
 import logging
 import subprocess
@@ -14,19 +15,26 @@ logger = logging.getLogger(__name__)
 
 NO_BRANCH_SENTINEL = "[no branch — use repo root]"
 
+
 class Cancelled(Exception):
     """User dismissed a prompt (Esc). Ctrl-C propagates as KeyboardInterrupt."""
 
+
 def pick_one(
-    items: Iterable[str], *, prompt: str, start_index: int | None = None,
+    items: Iterable[str],
+    *,
+    prompt: str,
+    start_index: int | None = None,
 ) -> str | None:
     """Fuzzy-pick one of `items`. Returns the chosen string, or None on Esc.
     First item is pre-highlighted unless `start_index` (1-based) is given."""
     from iterfzf import iterfzf
+
     extra: tuple[str, ...] = ("--layout=reverse-list",)
     if start_index is not None:
         extra += (f"--bind=load:pos({start_index})",)
     return iterfzf(list(items), prompt=prompt, __extra__=extra)
+
 
 def prompt_yes_no(prompt: str, *, default: bool) -> bool:
     """Two-item fzf picker for yes/no. `default=True` pre-highlights 'yes';
@@ -36,6 +44,7 @@ def prompt_yes_no(prompt: str, *, default: bool) -> bool:
     if choice is None:
         raise Cancelled
     return choice == "yes"
+
 
 def pick_or_create(
     candidates: list[str],
@@ -62,11 +71,13 @@ def pick_or_create(
           query and hit Enter, fzf returns rc=1 and prints only the query.
     """
     from iterfzf import BUNDLED_EXECUTABLE
+
     while True:
         r = subprocess.run(
             [str(BUNDLED_EXECUTABLE), "--print-query", f"--prompt={prompt}"],
             input=("\n".join(candidates) + "\n") if candidates else "",
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if r.returncode not in (0, 1):
             raise Cancelled
@@ -80,4 +91,3 @@ def pick_or_create(
         if validator is None or validator(query):
             return query
         logging_setup.cli_error(logger, f"invalid input {query!r}")
-

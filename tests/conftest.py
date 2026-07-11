@@ -20,11 +20,13 @@ def _auto_isolate_paths(tmp_path, monkeypatch):
 def fixtures_dir():
     return FIXTURES
 
+
 @pytest.fixture()
 def tmp_sock_dir():
     """Temp dir under /tmp to stay within AF_UNIX's 104-byte path limit on macOS."""
     with tempfile.TemporaryDirectory(dir="/tmp") as d:
         yield Path(d)
+
 
 @pytest.fixture
 def tmp_state_dir(tmp_path, monkeypatch):
@@ -33,6 +35,7 @@ def tmp_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TMUX_AGENTS_STATE_DIR", str(d))
     return d
 
+
 @pytest.fixture
 def tmp_config_dir(tmp_path, monkeypatch):
     d = tmp_path / "config"
@@ -40,9 +43,11 @@ def tmp_config_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TMUX_AGENTS_CONFIG_DIR", str(d))
     return d
 
+
 @pytest.fixture(autouse=True)
 def _reset_theme_cache():
     from tmux_agents import theme
+
     theme.reset_cache()
     yield
     theme.reset_cache()
@@ -50,6 +55,7 @@ def _reset_theme_cache():
 
 def _reset_root_logger():
     import logging
+
     root = logging.getLogger("tmux_agents")
     for h in list(root.handlers):
         h.close()
@@ -88,31 +94,42 @@ def agent_new_env(monkeypatch, tmp_state_dir):
     from tmux_agents import tmux, container, ssh_forward
     from tmux_agents.ssh_forward import PumpResult
 
-    captured = SimpleNamespace(made=[], splits=[], selected=[], ensured=[], spawned=[], respawned=[])
+    captured = SimpleNamespace(
+        made=[], splits=[], selected=[], ensured=[], spawned=[], respawned=[]
+    )
 
     monkeypatch.setattr(tmux, "session_exists", lambda s: True)
     monkeypatch.setattr(container, "current_name", lambda proj: None)
     monkeypatch.setattr(
-        container, "ensure_up",
-        lambda proj, up_cmd: captured.ensured.append((proj.name, up_cmd)) or "api-devcontainer",
+        container,
+        "ensure_up",
+        lambda proj, up_cmd: (
+            captured.ensured.append((proj.name, up_cmd)) or "api-devcontainer"
+        ),
     )
     monkeypatch.setattr(
-        ssh_forward, "maybe_spawn_pump",
+        ssh_forward,
+        "maybe_spawn_pump",
         lambda c, u: PumpResult("ready"),
     )
     monkeypatch.setattr(
-        tmux, "new_window",
+        tmux,
+        "new_window",
         lambda s, *, name, command, **_: captured.made.append((name, command)) or "@5",
     )
     monkeypatch.setattr(tmux, "active_pane_id", lambda wid: "%23")
     monkeypatch.setattr(
-        tmux, "respawn_pane",
+        tmux,
+        "respawn_pane",
         lambda pane_id, *, command: captured.respawned.append((pane_id, command)),
     )
     monkeypatch.setattr(tmux, "overview_pane_ids", lambda wid: [])
     monkeypatch.setattr(
-        tmux, "split_window",
-        lambda w, *, percent, command: captured.splits.append((w, percent, command)) or "%6",
+        tmux,
+        "split_window",
+        lambda w, *, percent, command: (
+            captured.splits.append((w, percent, command)) or "%6"
+        ),
     )
     monkeypatch.setattr(tmux, "set_pane_option", lambda *args: None)
     monkeypatch.setattr(tmux, "set_window_option", lambda *args: None)
@@ -121,8 +138,10 @@ def agent_new_env(monkeypatch, tmp_state_dir):
     # the long-lived server) so it survives the popup closing. Capture that
     # command, shlex-split into an argv list so tests assert on tokens.
     import shlex
+
     monkeypatch.setattr(
-        tmux, "run_shell_bg",
+        tmux,
+        "run_shell_bg",
         lambda command: captured.spawned.append(shlex.split(command)),
     )
     (tmp_state_dir / "layout").write_text("split")
@@ -145,9 +164,13 @@ def kill_env(monkeypatch, tmp_config_dir, tmp_path, tmp_state_dir):
     (tmp_config_dir / "projects.toml").write_text(
         f'[api]\nrepo = "{repo}"\nexec_cmd = "claude"\n'
     )
-    monkeypatch.setattr(tmux, "list_windows", lambda s: [
-        tmux.Window(id="@1", index=1, name="api:feat-x"),
-    ])
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:feat-x"),
+        ],
+    )
     killed: list[str] = []
     monkeypatch.setattr(tmux, "kill_window", lambda t: killed.append(t))
     return SimpleNamespace(repo=repo, killed=killed)
@@ -158,6 +181,7 @@ def tmux_agents_caplog(caplog):
     """caplog variant that captures records emitted under tmux_agents.* even
     after setup_logging() has set propagate=False on the root logger."""
     import logging
+
     root = logging.getLogger("tmux_agents")
     root.addHandler(caplog.handler)
     try:

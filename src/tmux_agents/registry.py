@@ -11,6 +11,7 @@ expiry, unlinks the dead ones, and returns live background/sleeping counts.
 This is where all TTL policy + cron-expr parsing lives (host side, local TZ) —
 the shell only writes and removes files.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,11 +48,15 @@ _CLASS = {
 # on the UserPromptSubmit <task-notification> that signals their completion. The
 # TTL only covers session-ends-before-completion and payload-format drift.
 # Tunable; see BACKLOG.md for config-ification.
-WAKEUP_GRACE = 30          # past the exact scheduledFor fire time
-CRON_ONESHOT_GRACE = 60    # past the computed next-fire time
+WAKEUP_GRACE = 30  # past the exact scheduledFor fire time
+CRON_ONESHOT_GRACE = 60  # past the computed next-fire time
 CRON_RECUR_TTL = 7 * 24 * 3600  # Claude's documented hard auto-expiry
-SUBAGENT_TTL = 30 * 60     # backstop; precise removal via the UserPromptSubmit task-notification
-BG_SHELL_TTL = 30 * 60     # backstop; precise removal via the UserPromptSubmit task-notification
+SUBAGENT_TTL = (
+    30 * 60
+)  # backstop; precise removal via the UserPromptSubmit task-notification
+BG_SHELL_TTL = (
+    30 * 60
+)  # backstop; precise removal via the UserPromptSubmit task-notification
 
 
 @dataclass(frozen=True)

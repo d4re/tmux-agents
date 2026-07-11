@@ -1,4 +1,5 @@
 """State-color palette — defaults, config loading, ANSI/tmux derivations."""
+
 from __future__ import annotations
 import logging
 import re
@@ -10,23 +11,23 @@ from tmux_agents import paths
 logger = logging.getLogger(__name__)
 
 DARK_DEFAULTS: dict[str, str] = {
-    state.RUNNING:    "#87af5f",
-    state.WAITING:    "#ffd75f",
-    state.IDLE:       "#5fafff",
+    state.RUNNING: "#87af5f",
+    state.WAITING: "#ffd75f",
+    state.IDLE: "#5fafff",
     state.BACKGROUND: "#5fd7d7",
-    state.SLEEPING:   "#c678dd",
-    state.ERRORED:    "#ff5f5f",
-    state.STARTING:   "#666666",
+    state.SLEEPING: "#c678dd",
+    state.ERRORED: "#ff5f5f",
+    state.STARTING: "#666666",
 }
 
 LIGHT_DEFAULTS: dict[str, str] = {
-    state.RUNNING:    "#4a7a2a",
-    state.WAITING:    "#b8860b",
-    state.IDLE:       "#0068a0",
+    state.RUNNING: "#4a7a2a",
+    state.WAITING: "#b8860b",
+    state.IDLE: "#0068a0",
     state.BACKGROUND: "#008787",
-    state.SLEEPING:   "#7a3b9a",
-    state.ERRORED:    "#c73030",
-    state.STARTING:   "#999999",
+    state.SLEEPING: "#7a3b9a",
+    state.ERRORED: "#c73030",
+    state.STARTING: "#999999",
 }
 
 
@@ -73,13 +74,13 @@ class Palette:
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 _COLOR_KEYS: dict[str, str] = {
-    "running":    state.RUNNING,
-    "waiting":    state.WAITING,
-    "idle":       state.IDLE,
+    "running": state.RUNNING,
+    "waiting": state.WAITING,
+    "idle": state.IDLE,
     "background": state.BACKGROUND,
-    "sleeping":   state.SLEEPING,
-    "errored":    state.ERRORED,
-    "starting":   state.STARTING,
+    "sleeping": state.SLEEPING,
+    "errored": state.ERRORED,
+    "starting": state.STARTING,
 }
 
 

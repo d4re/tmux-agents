@@ -1,6 +1,7 @@
 """Thin orchestrator for `agent-new`. See `docs/ARCHITECTURE.md` for
 the spawn-time pipeline that ties together config, container, worktree,
 ssh_forward, tmux, provisioning, and windows."""
+
 from __future__ import annotations
 import argparse
 import dataclasses
@@ -12,23 +13,43 @@ import sys
 import time
 from importlib import resources
 from tmux_agents import (
-    config, container, logging_setup, overview, paths, phase, pickers,
-    progress, provisioning, ssh_forward, startup, tmux, worktree,
+    config,
+    container,
+    logging_setup,
+    overview,
+    paths,
+    phase,
+    pickers,
+    progress,
+    provisioning,
+    ssh_forward,
+    startup,
+    tmux,
+    worktree,
 )
 from tmux_agents import windows as windows_mod
 
 logger = logging.getLogger(__name__)
 
+
 def _ensure_session() -> None:
     if not tmux.session_exists(tmux.SESSION):
         tmux.new_session(tmux.SESSION, window_name=tmux.CONTROL_WINDOW)
 
+
 def _is_valid_branch(name: str) -> bool:
-    return subprocess.run(
-        ["git", "check-ref-format", "--branch", name], capture_output=True, text=True,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "check-ref-format", "--branch", name],
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 0
+    )
+
 
 _OPEN_SUFFIX = "  (open)"
+
 
 def _decode_branch_choice(choice: str | None) -> str | None:
     """Map a `pick_or_create` return value to the branch arg.
@@ -43,7 +64,10 @@ def _decode_branch_choice(choice: str | None) -> str | None:
         return choice[: -len(_OPEN_SUFFIX)]
     return choice
 
-def _spawn_worker(window_id: str, pane_id: str, project: str, branch: str | None) -> None:
+
+def _spawn_worker(
+    window_id: str, pane_id: str, project: str, branch: str | None
+) -> None:
     """Fire-and-forget the detached provisioning worker via the tmux server
     (`run-shell -b`) so it survives the popup closing.
 
@@ -52,8 +76,16 @@ def _spawn_worker(window_id: str, pane_id: str, project: str, branch: str | None
     inside that popup does NOT survive — tmux tears down the popup's process
     tree on close and kills the worker before it does any work. Launching via
     the long-lived tmux server keeps the worker alive."""
-    argv = ["agent-new", "--provision", "--window-id", window_id,
-            "--pane-id", pane_id, "--project", project]
+    argv = [
+        "agent-new",
+        "--provision",
+        "--window-id",
+        window_id,
+        "--pane-id",
+        pane_id,
+        "--project",
+        project,
+    ]
     if branch:
         argv += ["--branch", branch]
     tmux.run_shell_bg(shlex.join(argv))
@@ -70,7 +102,8 @@ def _last_sibling_window_id(project: str) -> str | None:
         live = tmux.list_windows(tmux.SESSION)
     except Exception:
         logger.warning(
-            "_last_sibling_window_id: tmux.list_windows failed", exc_info=True,
+            "_last_sibling_window_id: tmux.list_windows failed",
+            exc_info=True,
         )
         return None
     siblings: list[tmux.Window] = []
@@ -85,15 +118,16 @@ def _last_sibling_window_id(project: str) -> str | None:
     return max(siblings, key=lambda w: w.index).id
 
 
-
-def _provision(*, window_id: str, pane_id: str, project: str,
-               branch: str | None) -> int:
+def _provision(
+    *, window_id: str, pane_id: str, project: str, branch: str | None
+) -> int:
     """Detached worker: run the slow startup stages against the spawn log,
     then swap the placeholder pane into Claude. Failures/warnings are handled
     per the async-startup spec."""
     logging_setup.setup_logging()
-    projects = config.safe_load(paths.projects_toml(),
-                                on_error=lambda msg: logger.error(msg))
+    projects = config.safe_load(
+        paths.projects_toml(), on_error=lambda msg: logger.error(msg)
+    )
     proj = projects.get(project)
     full_pane = f"%{pane_id}"
 
@@ -113,7 +147,9 @@ def _provision(*, window_id: str, pane_id: str, project: str,
             # Worktree doesn't exist yet — flip the host-side hint to errored.
             m = windows_mod.read_mapping(window_id)
             if m is not None:
-                windows_mod.write_mapping(dataclasses.replace(m, phase_hint=phase.ERRORED))
+                windows_mod.write_mapping(
+                    dataclasses.replace(m, phase_hint=phase.ERRORED)
+                )
         logger.error("%s: %s", window_id, reason)
         return 4
 
@@ -140,22 +176,30 @@ def _provision(*, window_id: str, pane_id: str, project: str,
                             st.info("building (this may take minutes)…")
                             container_name = container.ensure_up(
                                 proj,
-                                up_cmd=proj.substitute(proj.up_cmd, branch=branch) if proj.up_cmd else None,
+                                up_cmd=proj.substitute(proj.up_cmd, branch=branch)
+                                if proj.up_cmd
+                                else None,
                             )
                 except container.ContainerError as ce:
                     return _fatal(f"container start failed: {ce}")
                 container_workdir = proj.workdir_for(None)
                 if proj.forward_ssh_agent:
                     with reporter.stage("ssh pump") as st:
-                        ssh_forward.maybe_spawn_pump(container_name, proj.user or "vscode").render(st)
+                        ssh_forward.maybe_spawn_pump(
+                            container_name, proj.user or "vscode"
+                        ).render(st)
 
             if branch is not None:
                 try:
                     with reporter.stage("worktree") as st:
                         wt_path = worktree.resolve(
-                            proj.repo, branch, base_override=proj.base_branch,
-                            container=container_name, container_workdir=container_workdir,
-                            container_user=proj.user, reporter_stage=st,
+                            proj.repo,
+                            branch,
+                            base_override=proj.base_branch,
+                            container=container_name,
+                            container_workdir=container_workdir,
+                            container_user=proj.user,
+                            reporter_stage=st,
                         )
                 except worktree.WorktreeError as we:
                     return _fatal(f"worktree resolve failed: {we}")
@@ -165,21 +209,32 @@ def _provision(*, window_id: str, pane_id: str, project: str,
             # Worktree confirmed: rewrite the mapping with the real path, clear the hint.
             m = windows_mod.read_mapping(window_id)
             if m is not None:
-                windows_mod.write_mapping(dataclasses.replace(
-                    m, host_worktree=wt_path, phase_hint=None))
+                windows_mod.write_mapping(
+                    dataclasses.replace(m, host_worktree=wt_path, phase_hint=None)
+                )
 
             with reporter.stage("hooks") as st:
                 try:
                     with resources.as_file(
                         resources.files("tmux_agents.hooks") / "agents.json"
                     ) as template_path:
-                        provisioning.provision_settings(wt_path, template_path=template_path)
+                        provisioning.provision_settings(
+                            wt_path, template_path=template_path
+                        )
                 except Exception as e:
-                    st.warn(f"could not provision .claude/settings.local.json: {type(e).__name__}: {e}")
-                    logger.warning("%s: provisioning failed (non-fatal)", window_id, exc_info=True)
+                    st.warn(
+                        f"could not provision .claude/settings.local.json: {type(e).__name__}: {e}"
+                    )
+                    logger.warning(
+                        "%s: provisioning failed (non-fatal)", window_id, exc_info=True
+                    )
 
-            cmd = proj.substitute(proj.exec_cmd, branch=branch,
-                                  container_name=container_name, resume_args="")
+            cmd = proj.substitute(
+                proj.exec_cmd,
+                branch=branch,
+                container_name=container_name,
+                resume_args="",
+            )
 
         # Log file closed. Swap the pane into Claude (or hold on warning).
         if reporter.had_warning:
@@ -187,10 +242,17 @@ def _provision(*, window_id: str, pane_id: str, project: str,
             startup.hold_pane_then_exec(full_pane, log_path, cmd)
         else:
             startup._respawn_with_retry(full_pane, cmd)
-        logger.info("%s: provisioned, pane=%s warning=%s", window_id, full_pane, reporter.had_warning)
+        logger.info(
+            "%s: provisioned, pane=%s warning=%s",
+            window_id,
+            full_pane,
+            reporter.had_warning,
+        )
         return 0
     except Exception as e:
-        logger.error("%s: unexpected error in provisioning worker", window_id, exc_info=True)
+        logger.error(
+            "%s: unexpected error in provisioning worker", window_id, exc_info=True
+        )
         return _fatal(f"unexpected error: {type(e).__name__}: {e}")
 
 
@@ -199,8 +261,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent-new")
     parser.add_argument("project", nargs="?", default=None)
     parser.add_argument("branch", nargs="?", default=None)
-    parser.add_argument("--provision", action="store_true",
-                        help="internal: run the detached provisioning worker")
+    parser.add_argument(
+        "--provision",
+        action="store_true",
+        help="internal: run the detached provisioning worker",
+    )
     parser.add_argument("--window-id")
     parser.add_argument("--pane-id")
     parser.add_argument("--project", dest="project_opt")
@@ -212,8 +277,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         os.setsid()
         startup._detach_stdio()
-        return _provision(window_id=args.window_id, pane_id=args.pane_id,
-                          project=args.project_opt, branch=args.branch_opt)
+        return _provision(
+            window_id=args.window_id,
+            pane_id=args.pane_id,
+            project=args.project_opt,
+            branch=args.branch_opt,
+        )
 
     try:
         projects = config.load(paths.projects_toml())
@@ -281,10 +350,16 @@ def main(argv: list[str] | None = None) -> int:
     # recycled pane id doesn't show a stale letter during startup.
     paths.worktree_state_file(proj.repo, pane_id).unlink(missing_ok=True)
     paths.worktree_session_id_file(proj.repo, pane_id).unlink(missing_ok=True)
-    windows_mod.write_mapping(windows_mod.WindowMapping(
-        window_id=window_id, project=proj.name, branch=branch,
-        host_worktree=proj.repo, pane_id=pane_id, phase_hint=phase.STARTING,
-    ))
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id=window_id,
+            project=proj.name,
+            branch=branch,
+            host_worktree=proj.repo,
+            pane_id=pane_id,
+            phase_hint=phase.STARTING,
+        )
+    )
     if paths.read_layout() == "split":
         try:
             overview.attach_overview_pane(window_id)

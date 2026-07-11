@@ -1,6 +1,7 @@
 """`agent-overview` entry point: curses TUI for the split-layout overview
 pane. The row model, summary renderer, and event handlers live in
 `tmux_agents.overview`."""
+
 import curses
 from tmux_agents import logging_setup, overview, tmux
 
@@ -14,7 +15,8 @@ def _run_tui_loop(stdscr) -> None:
 
     while True:
         state.row_at_y, state.text_w_at_y = overview.render_curses(
-            stdscr, state.rows, state.cursor)
+            stdscr, state.rows, state.cursor
+        )
         stdscr.refresh()
 
         ch = stdscr.getch()

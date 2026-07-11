@@ -1,20 +1,25 @@
 """projects.toml loader. Resolves the three project modes (named
 `container` / `devcontainer = true` / host-only) and fills in defaults
 for `exec_cmd`, `up_cmd`, and `container_workdir`."""
+
 from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+
 class ConfigError(ValueError):
     pass
+
 
 _DEFAULT_USER = "vscode"
 _CONTAINER_DEFAULT_UP_CMD = "cd {repo} && devcontainer up --workspace-folder ."
 _HOST_ONLY_DEFAULT_EXEC_CMD = "cd {workdir} && exec claude{resume_args}"
 # macOS Application bundle binary used as the fallback for `agent-vscode`
 # when neither `shutil.which("code")` nor a `code_path` override resolves.
-DEFAULT_CODE_PATH = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+DEFAULT_CODE_PATH = (
+    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+)
 _CONTAINER_EXEC_CMD_PREFIX = (
     "docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -u {user} {container} bash -lc"
 )
@@ -23,6 +28,7 @@ _CONTAINER_EXEC_CMD_BODY_WITH_FORWARD = (
     "cd {workdir} && exec claude{resume_args}'"
 )
 _CONTAINER_EXEC_CMD_BODY_NO_FORWARD = "'cd {workdir} && exec claude{resume_args}'"
+
 
 @dataclass(frozen=True)
 class Project:
@@ -70,6 +76,7 @@ class Project:
             resume_args=resume_args,
         )
 
+
 def safe_load(path: Path, *, on_error=None) -> dict[str, Project]:
     """Load projects.toml; return {} on missing/malformed. `on_error` is
     called with the exception message when a non-FileNotFoundError occurs
@@ -82,6 +89,7 @@ def safe_load(path: Path, *, on_error=None) -> dict[str, Project]:
         if on_error is not None:
             on_error(f"projects.toml load failed: {type(ex).__name__}: {ex}")
         return {}
+
 
 def load(path: Path) -> dict[str, Project]:
     with open(path, "rb") as f:
@@ -144,9 +152,16 @@ def read_code_path(path: Path) -> str:
     return DEFAULT_CODE_PATH
 
 
-def _default_exec_cmd(is_container: bool, forward_ssh_agent: bool, user: str | None) -> str:
+def _default_exec_cmd(
+    is_container: bool, forward_ssh_agent: bool, user: str | None
+) -> str:
     if not is_container:
         return _HOST_ONLY_DEFAULT_EXEC_CMD
-    body = (_CONTAINER_EXEC_CMD_BODY_WITH_FORWARD if forward_ssh_agent
-            else _CONTAINER_EXEC_CMD_BODY_NO_FORWARD)
-    return (_CONTAINER_EXEC_CMD_PREFIX + " " + body).replace("{user}", user or _DEFAULT_USER)
+    body = (
+        _CONTAINER_EXEC_CMD_BODY_WITH_FORWARD
+        if forward_ssh_agent
+        else _CONTAINER_EXEC_CMD_BODY_NO_FORWARD
+    )
+    return (_CONTAINER_EXEC_CMD_PREFIX + " " + body).replace(
+        "{user}", user or _DEFAULT_USER
+    )

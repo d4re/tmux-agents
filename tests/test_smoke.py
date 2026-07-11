@@ -2,7 +2,9 @@ import shutil
 import subprocess
 import pytest
 
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+pytestmark = pytest.mark.skipif(
+    shutil.which("tmux") is None, reason="tmux not installed"
+)
 
 SESSION = "agents-smoke"
 
@@ -19,10 +21,20 @@ def ephemeral_session(tmp_sock_dir, monkeypatch):
     monkeypatch.setattr("tmux_agents.tmux.SESSION", SESSION)
 
     def _tmux(*args):
-        return subprocess.run([*tmuxbin, *args], capture_output=True, text=True, check=False)
+        return subprocess.run(
+            [*tmuxbin, *args], capture_output=True, text=True, check=False
+        )
 
     _tmux("new-session", "-d", "-s", SESSION, "-n", "ctrl")
-    _tmux("new-window", "-t", SESSION, "-n", "api:feat-x", "-d", "bash -c 'while true; do sleep 60; done'")
+    _tmux(
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "api:feat-x",
+        "-d",
+        "bash -c 'while true; do sleep 60; done'",
+    )
     try:
         yield
     finally:
@@ -38,6 +50,7 @@ def test_state_tick_runs_and_emits_summary(ephemeral_session, capsys):
     requires a real terminal and exits non-zero under pytest.
     """
     from tmux_agents.commands import state_tick
+
     assert state_tick.main([]) == 0
     out = capsys.readouterr().out
     assert any(c in out for c in "RWILX")  # at least one state code rendered

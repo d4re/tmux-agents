@@ -5,7 +5,9 @@ from tmux_agents.ssh_forward import PumpResult
 def test_render_disabled_no_sock_calls_warn():
     st = MagicMock()
     PumpResult("disabled_no_sock").render(st)
-    st.warn.assert_called_once_with("SSH_AUTH_SOCK not set on host (forwarding disabled)")
+    st.warn.assert_called_once_with(
+        "SSH_AUTH_SOCK not set on host (forwarding disabled)"
+    )
 
 
 def test_render_already_healthy_calls_skip():
@@ -35,4 +37,6 @@ def test_render_timed_out_calls_warn():
 def test_render_disabled_no_python_calls_warn():
     st = MagicMock()
     PumpResult("disabled_no_python").render(st)
-    st.warn.assert_called_once_with("python3 missing in container (forwarding disabled)")
+    st.warn.assert_called_once_with(
+        "python3 missing in container (forwarding disabled)"
+    )

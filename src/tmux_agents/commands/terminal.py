@@ -7,6 +7,7 @@ same env forwarding (TERM, COLORTERM, TMUX_PANE, optional
 SSH_AUTH_SOCK) Claude uses inside the agent pane. Bound to `Ctrl-Space T`
 via `display-popup -E` so the popup closes when the shell exits.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,8 +41,7 @@ def _exec_container(proj: config.Project, mapping: windows_mod.WindowMapping) ->
     if not name:
         return _fail(f"no running container for {mapping.project!r}")
     workdir = proj.workdir_for(mapping.branch)
-    argv = ["docker", "exec", "-it",
-            "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE"]
+    argv = ["docker", "exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE"]
     if proj.forward_ssh_agent:
         argv += ["-e", f"SSH_AUTH_SOCK={_SSH_UDS_PATH}"]
     argv += ["-u", proj.user or "vscode", "-w", workdir, name, "bash", "-il"]

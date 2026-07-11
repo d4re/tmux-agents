@@ -2,6 +2,7 @@
 resulting state.json + pending-<pane>/ markers evolve as expected. The hook
 commands all dispatch to write-state.sh, which provisioning copies into
 the worktree from package data."""
+
 import json
 import os
 import shutil
@@ -22,7 +23,10 @@ def project(tmp_path):
     provisioning.provision_settings(tmp_path, template_path=TEMPLATE)
     return tmp_path
 
-def _hook_cmd(template: dict, event: str, matcher: str | None = None, index: int = -1) -> str:
+
+def _hook_cmd(
+    template: dict, event: str, matcher: str | None = None, index: int = -1
+) -> str:
     """Return the LAST command under (event, matcher). -1 matches 'state-writing' hook
     when a notification event also contains the bell."""
     for group in template["hooks"][event]:
@@ -41,6 +45,7 @@ def _hook_cmd_containing(template: dict, event: str, needle: str) -> str:
                 return h["command"]
     raise AssertionError(f"no hook command containing {needle!r} for {event}")
 
+
 def _run(sh_command: str, env: dict) -> subprocess.CompletedProcess:
     # Build a clean env: start from os.environ, then overlay the provided env.
     # Explicitly remove TMUX_PANE when the caller did not include it, so that
@@ -48,8 +53,10 @@ def _run(sh_command: str, env: dict) -> subprocess.CompletedProcess:
     merged = {**os.environ, **env}
     if "TMUX_PANE" not in env:
         merged.pop("TMUX_PANE", None)
-    return subprocess.run([SH, "-c", sh_command], env=merged,
-                          capture_output=True, text=True)
+    return subprocess.run(
+        [SH, "-c", sh_command], env=merged, capture_output=True, text=True
+    )
+
 
 def _env(project_dir: Path, pane: str = "%23") -> dict:
     return {"CLAUDE_PROJECT_DIR": str(project_dir), "TMUX_PANE": pane}
@@ -64,12 +71,19 @@ def _pending(project_dir: Path, pane_stripped: str = "23") -> Path:
     return project_dir / ".local" / ".tmux-agents" / f"pending-{pane_stripped}"
 
 
-def _run_with_input(sh_command: str, env: dict, payload: str) -> subprocess.CompletedProcess:
+def _run_with_input(
+    sh_command: str, env: dict, payload: str
+) -> subprocess.CompletedProcess:
     merged = {**os.environ, **env}
     if "TMUX_PANE" not in env:
         merged.pop("TMUX_PANE", None)
-    return subprocess.run([SH, "-c", sh_command], env=merged, input=payload,
-                          capture_output=True, text=True)
+    return subprocess.run(
+        [SH, "-c", sh_command],
+        env=merged,
+        input=payload,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_session_start_writes_idle_state(project):
@@ -171,8 +185,11 @@ TASK_NOTIFICATION_SUBAGENT = '{"hook_event_name":"UserPromptSubmit","prompt":"<t
 def test_add_wakeup_marker(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    r = _run_with_input(_hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
-                        _env(project), WAKEUP_PAYLOAD)
+    r = _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
+        _env(project),
+        WAKEUP_PAYLOAD,
+    )
     assert r.returncode == 0, r.stderr
     m = _pending(project) / "wakeup"
     assert m.exists() and m.read_text().strip() == "1780327440000"
@@ -181,10 +198,16 @@ def test_add_wakeup_marker(project):
 def test_add_cron_recurring_then_oneshot(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="CronCreate"),
-                    _env(project), CRON_RECUR_PAYLOAD)
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="CronCreate"),
-                    _env(project), CRON_ONESHOT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="CronCreate"),
+        _env(project),
+        CRON_RECUR_PAYLOAD,
+    )
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="CronCreate"),
+        _env(project),
+        CRON_ONESHOT_PAYLOAD,
+    )
     assert (_pending(project) / "cron-recur__aa7dd6dd").exists()
     oneshot = _pending(project) / "cron-oneshot__c8ae5c19"
     # Marker content is the machine-readable cron expr (tool_input.cron), NOT
@@ -195,34 +218,44 @@ def test_add_cron_recurring_then_oneshot(project):
 def test_del_cron_removes_marker(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="CronCreate"),
-                    _env(project), CRON_RECUR_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="CronCreate"),
+        _env(project),
+        CRON_RECUR_PAYLOAD,
+    )
     assert (_pending(project) / "cron-recur__aa7dd6dd").exists()
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="CronDelete"),
-                    _env(project), CRON_DELETE_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="CronDelete"),
+        _env(project),
+        CRON_DELETE_PAYLOAD,
+    )
     assert not (_pending(project) / "cron-recur__aa7dd6dd").exists()
 
 
 def test_add_subagent_only_when_background(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Agent"),
-                    _env(project), FG_SUBAGENT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"), _env(project), FG_SUBAGENT_PAYLOAD
+    )
     assert not (_pending(project) / "subagent__deadbeef").exists()
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Agent"),
-                    _env(project), BG_SUBAGENT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"), _env(project), BG_SUBAGENT_PAYLOAD
+    )
     assert (_pending(project) / "subagent__ac7ea5fc7db584902").exists()
 
 
 def test_add_bgshell_only_when_background(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), FG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), FG_SHELL_PAYLOAD
+    )
     if _pending(project).exists():
         assert not list(_pending(project).glob("bg-shell__*"))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     assert (_pending(project) / "bg-shell__ba861qi9a").exists()
 
 
@@ -231,8 +264,9 @@ def test_clear_completed_removes_bgshell_marker(project):
     arrives as a UserPromptSubmit <task-notification> carrying the launch id."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     assert (_pending(project) / "bg-shell__ba861qi9a").exists()
     cmd = _hook_cmd_containing(t, "UserPromptSubmit", "clear-completed")
     _run_with_input(cmd, _env(project), TASK_NOTIFICATION_BGSHELL)
@@ -244,8 +278,9 @@ def test_clear_completed_removes_subagent_marker(project):
     (the sole removal signal — no SubagentStop hook is wired)."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Agent"),
-                    _env(project), BG_SUBAGENT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"), _env(project), BG_SUBAGENT_PAYLOAD
+    )
     assert (_pending(project) / "subagent__ac7ea5fc7db584902").exists()
     cmd = _hook_cmd_containing(t, "UserPromptSubmit", "clear-completed")
     _run_with_input(cmd, _env(project), TASK_NOTIFICATION_SUBAGENT)
@@ -275,8 +310,11 @@ def test_add_bgshell_skipped_for_subagent(project):
     dir (the parent never sees its completion notification)."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), SUBAGENT_BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"),
+        _env(project),
+        SUBAGENT_BG_SHELL_PAYLOAD,
+    )
     assert not (_pending(project) / "bg-shell__subsh1").exists()
 
 
@@ -285,8 +323,11 @@ def test_add_subagent_skipped_for_nested_subagent(project):
     register under the parent pane."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Agent"),
-                    _env(project), SUBAGENT_BG_AGENT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"),
+        _env(project),
+        SUBAGENT_BG_AGENT_PAYLOAD,
+    )
     assert not (_pending(project) / "subagent__nested1").exists()
 
 
@@ -308,8 +349,9 @@ def test_stop_reconcile_removes_completed_bgshell_marker(project):
     a UserPromptSubmit) is reaped on Stop: its id is absent from background_tasks."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     assert (_pending(project) / "bg-shell__ba861qi9a").exists()
     cmd = _hook_cmd_containing(t, "Stop", "reconcile")
     _run_with_input(cmd, _env(project), STOP_NO_TASKS)
@@ -319,8 +361,9 @@ def test_stop_reconcile_removes_completed_bgshell_marker(project):
 def test_stop_reconcile_removes_completed_subagent_marker(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Agent"),
-                    _env(project), BG_SUBAGENT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"), _env(project), BG_SUBAGENT_PAYLOAD
+    )
     assert (_pending(project) / "subagent__ac7ea5fc7db584902").exists()
     cmd = _hook_cmd_containing(t, "Stop", "reconcile")
     _run_with_input(cmd, _env(project), STOP_NO_TASKS)
@@ -332,8 +375,9 @@ def test_stop_reconcile_keeps_running_bgshell_marker(project):
     ended its turn) stays counted — its id is present in background_tasks."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     cmd = _hook_cmd_containing(t, "Stop", "reconcile")
     _run_with_input(cmd, _env(project), STOP_BGSHELL_RUNNING)
     assert (_pending(project) / "bg-shell__ba861qi9a").exists()
@@ -342,8 +386,9 @@ def test_stop_reconcile_keeps_running_bgshell_marker(project):
 def test_stop_reconcile_keeps_running_subagent_marker(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Agent"),
-                    _env(project), BG_SUBAGENT_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"), _env(project), BG_SUBAGENT_PAYLOAD
+    )
     cmd = _hook_cmd_containing(t, "Stop", "reconcile")
     _run_with_input(cmd, _env(project), STOP_SUBAGENT_RUNNING)
     assert (_pending(project) / "subagent__ac7ea5fc7db584902").exists()
@@ -355,8 +400,9 @@ def test_stop_reconcile_skips_when_background_tasks_absent(project):
     than blindly clearing markers for tasks that may still be running."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     cmd = _hook_cmd_containing(t, "Stop", "reconcile")
     _run_with_input(cmd, _env(project), STOP_NO_FIELD)
     assert (_pending(project) / "bg-shell__ba861qi9a").exists()
@@ -367,10 +413,14 @@ def test_stop_reconcile_leaves_scheduled_markers(project):
     markers (wakeup/cron) expire by their own fire time and must be untouched."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
-                    _env(project), WAKEUP_PAYLOAD)
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
+        _env(project),
+        WAKEUP_PAYLOAD,
+    )
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     cmd = _hook_cmd_containing(t, "Stop", "reconcile")
     _run_with_input(cmd, _env(project), STOP_NO_TASKS)
     assert (_pending(project) / "wakeup").exists()
@@ -381,18 +431,26 @@ def test_clear_completed_ignores_normal_prompt(project):
     """A real user prompt (no task-notification) must not disturb markers."""
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="Bash"),
-                    _env(project), BG_SHELL_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Bash"), _env(project), BG_SHELL_PAYLOAD
+    )
     cmd = _hook_cmd_containing(t, "UserPromptSubmit", "clear-completed")
-    _run_with_input(cmd, _env(project), '{"hook_event_name":"UserPromptSubmit","prompt":"hello there"}')
+    _run_with_input(
+        cmd,
+        _env(project),
+        '{"hook_event_name":"UserPromptSubmit","prompt":"hello there"}',
+    )
     assert (_pending(project) / "bg-shell__ba861qi9a").exists()
 
 
 def test_init_clears_pending(project):
     t = json.loads(TEMPLATE.read_text())
     _run(_hook_cmd(t, "SessionStart"), _env(project))
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
-                    _env(project), WAKEUP_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
+        _env(project),
+        WAKEUP_PAYLOAD,
+    )
     assert (_pending(project) / "wakeup").exists()
     _run(_hook_cmd(t, "SessionStart"), _env(project))
     assert not (_pending(project) / "wakeup").exists()
@@ -402,8 +460,11 @@ def test_session_end_cleans_up(project):
     t = json.loads(TEMPLATE.read_text())
     payload = '{"session_id":"01234567-89ab-cdef-0123-456789abcdef","source":"startup","cwd":"/x"}'
     _run_with_input(_hook_cmd(t, "SessionStart"), _env(project), payload)
-    _run_with_input(_hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
-                    _env(project), WAKEUP_PAYLOAD)
+    _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="ScheduleWakeup"),
+        _env(project),
+        WAKEUP_PAYLOAD,
+    )
     base = project / ".local" / ".tmux-agents"
     assert (base / "session-23.id").exists()
     _run(_hook_cmd(t, "SessionEnd"), _env(project))
@@ -446,7 +507,8 @@ def test_session_start_with_garbage_stdin_writes_no_id(project):
 
 def test_session_start_with_payload_missing_session_id_writes_no_id(project):
     t = json.loads(TEMPLATE.read_text())
-    r = _run_with_input(_hook_cmd(t, "SessionStart"), _env(project),
-                        '{"source":"startup","cwd":"/x"}')
+    r = _run_with_input(
+        _hook_cmd(t, "SessionStart"), _env(project), '{"source":"startup","cwd":"/x"}'
+    )
     assert r.returncode == 0, r.stderr
     assert not (project / ".local" / ".tmux-agents" / "session-23.id").exists()

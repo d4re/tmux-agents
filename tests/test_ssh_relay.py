@@ -7,7 +7,9 @@ from tmux_agents import _ssh_framing as f
 from tmux_agents import _ssh_relay_script as relay
 
 
-def test_main_returns_exit_duplicate_when_other_relay_serving(tmp_sock_dir, monkeypatch):
+def test_main_returns_exit_duplicate_when_other_relay_serving(
+    tmp_sock_dir, monkeypatch
+):
     """Distinct exit code so the pump's supervise loop knows to defer
     instead of retrying — otherwise we'd busy-loop racing the live relay."""
     sock_path = tmp_sock_dir / "live.sock"
@@ -99,7 +101,8 @@ def test_relay_imports_framing_as_sibling_without_package(tmp_path):
     )
     r = subprocess.run(
         [sys.executable, "-E", "-S", "-c", code],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert r.returncode == 0, r.stderr
     assert "/tmp/tmux-agents-ssh.sock" in r.stdout

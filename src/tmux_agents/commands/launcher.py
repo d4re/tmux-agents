@@ -8,6 +8,7 @@ and orchestrates the restore handoff:
     → execvp into `tmux attach`
 
 Otherwise falls back to the legacy `tmux new-session -A` path."""
+
 from __future__ import annotations
 import logging
 import os
@@ -59,8 +60,11 @@ def _move_snapshot_aside() -> None:
 
 def _spawn_restore_worker() -> None:
     subprocess.Popen(
-        ["agent-restore", "--background"], start_new_session=True,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["agent-restore", "--background"],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -84,7 +88,9 @@ def main() -> int:
 
     _move_snapshot_aside()
     tmux.start_server_detached_with_session(
-        conf=conf, session=tmux.SESSION, window_name=tmux.CONTROL_WINDOW,
+        conf=conf,
+        session=tmux.SESSION,
+        window_name=tmux.CONTROL_WINDOW,
     )
     _spawn_restore_worker()
     os.execvp("tmux", tmux.attach_argv())

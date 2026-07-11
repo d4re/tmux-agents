@@ -7,6 +7,7 @@ which it delivers as plain files (`_ssh_framing.py` + `_ssh_relay_script.py`)
 via `docker exec` and runs with `python3 <dir>/_ssh_relay_script.py`. Nothing
 is inlined — the relay source is shipped verbatim from package data.
 """
+
 from tmux_agents._ssh_framing import (  # noqa: F401
     SENTINEL,
     encode_frame,
@@ -31,8 +32,7 @@ _LOGGER_NAME = "tmux_agents.ssh.pump"
 # the unified log without importing the host logging stack (keeps the pump's
 # startup cheap; it runs as its own detached process).
 _LOG_LINE_FMT = (
-    "%(asctime)s %(levelname)-7s pid=%(process)d "
-    "%(name)s[%(component)s]: %(message)s"
+    "%(asctime)s %(levelname)-7s pid=%(process)d %(name)s[%(component)s]: %(message)s"
 )
 _LOG_DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
 _MAX_BYTES = 5 * 1024 * 1024
@@ -53,15 +53,19 @@ def _init_logging(container_name: str) -> None:
     if not path:
         return
     handler = logging.handlers.RotatingFileHandler(
-        path, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT,
+        path,
+        maxBytes=_MAX_BYTES,
+        backupCount=_BACKUP_COUNT,
     )
     formatter = logging.Formatter(_LOG_LINE_FMT, datefmt=_LOG_DATE_FMT)
     formatter.converter = time.gmtime
     handler.setFormatter(formatter)
+
     class _ComponentFilter(logging.Filter):
         def filter(self, record):
             record.component = container_name
             return True
+
     logger.addFilter(_ComponentFilter())
     logger.addHandler(handler)
     raw = os.environ.get("TMUX_AGENTS_LOG_LEVEL", "INFO").strip().upper() or "INFO"
@@ -128,7 +132,8 @@ def _container_running(container: str) -> bool:
     supervise to stop retrying once the container is gone."""
     r = subprocess.run(
         ["docker", "inspect", "-f", "{{.State.Running}}", container],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return r.returncode == 0 and r.stdout.strip() == "true"
 
@@ -143,9 +148,20 @@ def _deliver_relay(container: str, user: str) -> None:
     for name in _RELAY_FILES:
         src = resources.files("tmux_agents").joinpath(name).read_text()
         subprocess.run(
-            ["docker", "exec", "-i", "-u", user, container, "sh", "-c",
-             f"mkdir -p {_RELAY_DIR} && cat > {_RELAY_DIR}/{name}"],
-            input=src, text=True, check=True,
+            [
+                "docker",
+                "exec",
+                "-i",
+                "-u",
+                user,
+                container,
+                "sh",
+                "-c",
+                f"mkdir -p {_RELAY_DIR} && cat > {_RELAY_DIR}/{name}",
+            ],
+            input=src,
+            text=True,
+            check=True,
         )
 
 
@@ -184,10 +200,14 @@ def _run_one_relay(container: str, user: str) -> int:
     return rc
 
 
-def supervise(container: str, user: str, *,
-              run_one=_run_one_relay,
-              container_alive=_container_running,
-              sleep=time.sleep) -> int:
+def supervise(
+    container: str,
+    user: str,
+    *,
+    run_one=_run_one_relay,
+    container_alive=_container_running,
+    sleep=time.sleep,
+) -> int:
     """Re-spawn the relay on transient failures so the pump survives
     container restarts, sleep/wake, and framing glitches. Exits cleanly when:
     SSH_AUTH_SOCK is gone, the relay said another one is serving, or the

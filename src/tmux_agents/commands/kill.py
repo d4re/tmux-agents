@@ -1,32 +1,47 @@
 """Thin orchestrator for `agent-kill`: window picker, optional
 `git worktree remove` with interactive force-retry on dirty."""
+
 from __future__ import annotations
 import argparse
 import logging
 import sys
 from tmux_agents import (
-    config, container, logging_setup, paths, pickers, tmux, worktree,
+    config,
+    container,
+    logging_setup,
+    paths,
+    pickers,
+    tmux,
+    worktree,
 )
 from tmux_agents import windows as windows_mod
 
 logger = logging.getLogger(__name__)
 
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-kill")
     p.add_argument("window", nargs="?", default=None, help="window index (e.g. '2')")
-    p.add_argument("--window-id", default=None,
-                   help="tmux window id (e.g. '@5'); skips the picker")
+    p.add_argument(
+        "--window-id", default=None, help="tmux window id (e.g. '@5'); skips the picker"
+    )
     p.add_argument("--prune-worktree", action="store_true")
-    p.add_argument("--force", action="store_true",
-                   help="pass --force to git worktree remove; requires --prune-worktree")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="pass --force to git worktree remove; requires --prune-worktree",
+    )
     return p
+
 
 def _format_line(win: tmux.Window) -> str:
     return f"{win.index}\t{win.name}\t{win.state_code or '?'}"
 
+
 def _window_from_line(line: str, windows: list[tmux.Window]) -> tmux.Window:
     idx = int(line.split("\t", 1)[0])
     return next(w for w in windows if w.index == idx)
+
 
 def _container_kwargs(proj: config.Project, branch: str) -> dict | None:
     """Container kwargs for worktree.remove; None on container failure (error printed)."""
@@ -41,7 +56,12 @@ def _container_kwargs(proj: config.Project, branch: str) -> dict | None:
     except container.ContainerError as e:
         logging_setup.cli_error(logger, str(e))
         return None
-    return {"container": name, "container_workdir": proj.workdir_for(None), "container_user": proj.user}
+    return {
+        "container": name,
+        "container_workdir": proj.workdir_for(None),
+        "container_user": proj.user,
+    }
+
 
 def _resolve_prune_target(win: tmux.Window):
     """Return (proj, branch, container_kwargs) for `win`, None to skip silently
@@ -57,6 +77,7 @@ def _resolve_prune_target(win: tmux.Window):
         return False
     return proj, branch, kw
 
+
 def _prune(win: tmux.Window, *, force: bool) -> int:
     target = _resolve_prune_target(win)
     if target is None:
@@ -68,12 +89,15 @@ def _prune(win: tmux.Window, *, force: bool) -> int:
         worktree.remove(proj.repo, branch, force=force, **kw)
     except worktree.DirtyWorktreeError as e:
         logging_setup.cli_error(logger, f"worktree has uncommitted changes: {e}")
-        print("hint: commit or stash the changes, or re-run with --force", file=sys.stderr)
+        print(
+            "hint: commit or stash the changes, or re-run with --force", file=sys.stderr
+        )
         return 3
     except worktree.WorktreeError as e:
         logging_setup.cli_error(logger, str(e))
         return 3
     return 0
+
 
 def _interactive_prune(win: tmux.Window) -> int:
     """Remove the worktree, prompting for force on dirty. 0 = caller should kill."""
@@ -92,7 +116,8 @@ def _interactive_prune(win: tmux.Window) -> int:
         return 0
     except worktree.DirtyWorktreeError:
         if not pickers.prompt_yes_no(
-            f"{win.name}: worktree has uncommitted changes; force remove? > ", default=False,
+            f"{win.name}: worktree has uncommitted changes; force remove? > ",
+            default=False,
         ):
             return 1
         print(f"force removing worktree {branch}…", flush=True)
@@ -107,6 +132,7 @@ def _interactive_prune(win: tmux.Window) -> int:
         logging_setup.cli_error(logger, str(e))
         return 1
 
+
 def _has_worktree(win: tmux.Window) -> bool:
     """True iff this window was spawned with a branch and its worktree dir exists.
 
@@ -120,11 +146,14 @@ def _has_worktree(win: tmux.Window) -> bool:
         return False
     return m.host_worktree.is_dir()
 
+
 def _kill_with_optional_prune(win: tmux.Window) -> int:
     """Prompt for worktree pruning (only when a worktree exists) then kill."""
     if _has_worktree(win):
         try:
-            prune = pickers.prompt_yes_no(f"prune worktree for {win.name}? > ", default=True)
+            prune = pickers.prompt_yes_no(
+                f"prune worktree for {win.name}? > ", default=True
+            )
         except (KeyboardInterrupt, pickers.Cancelled):
             return 0
         if prune and _interactive_prune(win) != 0:
@@ -134,7 +163,9 @@ def _kill_with_optional_prune(win: tmux.Window) -> int:
 
 
 def _interactive() -> int:
-    windows = [w for w in tmux.list_windows(tmux.SESSION) if w.name != tmux.CONTROL_WINDOW]
+    windows = [
+        w for w in tmux.list_windows(tmux.SESSION) if w.name != tmux.CONTROL_WINDOW
+    ]
     if not windows:
         print("no agent windows to kill", file=sys.stderr)
         logger.info("no agent windows to kill")
@@ -145,6 +176,7 @@ def _interactive() -> int:
     if pick is None:
         return 0
     return _kill_with_optional_prune(_window_from_line(pick, windows))
+
 
 def main(argv: list[str] | None = None) -> int:
     logging_setup.setup_logging()

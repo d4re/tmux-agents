@@ -30,10 +30,16 @@ def test_save_folds_round_trip(tmp_state_dir):
 
 
 def test_gc_folds_drops_repos_not_in_window_list(monkeypatch, tmp_state_dir):
-    monkeypatch.setattr(tmux, "list_windows", lambda s: [
-        tmux.Window(id="@1", index=1, name="api:feat-x"),
-    ])
-    paths.folds_file().write_text(json.dumps({"api": True, "web": True, "infra": False}))
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:feat-x"),
+        ],
+    )
+    paths.folds_file().write_text(
+        json.dumps({"api": True, "web": True, "infra": False})
+    )
     folds = overview.load_folds_with_gc()
     assert folds == {"api": True}
     assert _read_json(paths.folds_file()) == {"api": True}

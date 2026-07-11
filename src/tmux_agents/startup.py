@@ -3,6 +3,7 @@ and `agent-restore`. These are the pieces common to placing a placeholder
 pane, respawning it, writing per-pane state, and showing a static message —
 the orchestration around them lives in commands/new.py and commands/restore.py.
 """
+
 from __future__ import annotations
 import logging
 import os
@@ -37,9 +38,13 @@ def _respawn_with_retry(pane_id: str, command: str) -> None:
             transient = "fork failed" in (ex.stderr or "")
             if not transient or attempt == _FORK_RETRY_ATTEMPTS:
                 raise
-            logger.warning("respawn pane=%s transient fork failure "
-                           "(attempt %d/%d), retrying: %s",
-                           pane_id, attempt, _FORK_RETRY_ATTEMPTS, ex)
+            logger.warning(
+                "respawn pane=%s transient fork failure (attempt %d/%d), retrying: %s",
+                pane_id,
+                attempt,
+                _FORK_RETRY_ATTEMPTS,
+                ex,
+            )
             time.sleep(_FORK_RETRY_BACKOFF_S)
 
 
@@ -54,13 +59,20 @@ def _detach_stdio(_os=os) -> None:
         _os.close(devnull)
 
 
-def _write_pane_state(worktree: Path, pane_id_stripped: str, *, phase_value: str) -> None:
+def _write_pane_state(
+    worktree: Path, pane_id_stripped: str, *, phase_value: str
+) -> None:
     f = paths.worktree_state_file(worktree, pane_id_stripped)
     try:
         paths.atomic_write_json(f, {"phase": phase_value, "updated_at": ""})
     except OSError as ex:
-        logger.warning("pane-state write failed for %s pane=%s phase=%r: %s",
-                       worktree, pane_id_stripped, phase_value, ex)
+        logger.warning(
+            "pane-state write failed for %s pane=%s phase=%r: %s",
+            worktree,
+            pane_id_stripped,
+            phase_value,
+            ex,
+        )
 
 
 def show_static_text(pane_id: str, text: str) -> None:
@@ -68,11 +80,17 @@ def show_static_text(pane_id: str, text: str) -> None:
     idle-sleeps, so the message stays readable. Callers build their own
     message body (failure notice, etc.). Heredoc avoids escaping every shell
     metacharacter in `text`."""
-    cmd = "sh -c 'cat <<\"EOF\"" + text + "EOF\nexec sh -c \"while :; do sleep 3600; done\"'"
+    cmd = (
+        'sh -c \'cat <<"EOF"'
+        + text
+        + 'EOF\nexec sh -c "while :; do sleep 3600; done"\''
+    )
     try:
         tmux.respawn_pane(pane_id, command=cmd)
     except Exception:
-        logger.warning("show_static_text: respawn failed for %s", pane_id, exc_info=True)
+        logger.warning(
+            "show_static_text: respawn failed for %s", pane_id, exc_info=True
+        )
 
 
 def hold_pane_then_exec(pane_id: str, log_path: Path, exec_cmd: str) -> None:
@@ -85,7 +103,7 @@ def hold_pane_then_exec(pane_id: str, log_path: Path, exec_cmd: str) -> None:
     inner = (
         f'cat "{log_path}"; '
         'printf "\\n\\n  startup finished with warnings — press Enter to launch Claude "; '
-        'read _; '
-        f'exec {exec_cmd}'
+        "read _; "
+        f"exec {exec_cmd}"
     )
     _respawn_with_retry(pane_id, f"sh -c {shlex.quote(inner)}")

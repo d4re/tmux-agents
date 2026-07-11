@@ -6,9 +6,17 @@ TEMPLATE = resources.files("tmux_agents.hooks") / "agents.json"
 
 def test_template_has_required_hooks_and_matchers():
     t = json.loads(TEMPLATE.read_text())
-    required = {"SessionStart", "UserPromptSubmit", "Stop", "StopFailure",
-                "Notification", "PermissionDenied",
-                "PostToolUse", "PostToolUseFailure", "SessionEnd"}
+    required = {
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "StopFailure",
+        "Notification",
+        "PermissionDenied",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "SessionEnd",
+    }
     assert required.issubset(t["hooks"].keys())
     assert "permission_prompt" in [h.get("matcher") for h in t["hooks"]["Notification"]]
     post = [h.get("matcher") for h in t["hooks"]["PostToolUse"]]

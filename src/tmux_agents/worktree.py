@@ -2,6 +2,7 @@
 `docker exec` so the worktree's internal `.git` pointers resolve inside
 the container instead of pointing at host paths the container can't
 reach."""
+
 from __future__ import annotations
 import logging
 import subprocess
@@ -11,11 +12,14 @@ from tmux_agents.ssh_forward import UDS_PATH as _SSH_UDS_PATH
 
 logger = logging.getLogger(__name__)
 
+
 class WorktreeError(RuntimeError):
     pass
 
+
 class DirtyWorktreeError(WorktreeError):
     """Worktree has uncommitted or untracked files; caller may retry with force."""
+
 
 _DIRTY_MARKER = "contains modified or untracked files"
 
@@ -41,9 +45,14 @@ def _looks_like_offline_fetch_failure(stderr: str) -> bool:
     return any(hint in s for hint in _OFFLINE_FETCH_HINTS)
 
 
-def _git_run(args: list[str], *, repo: Path, container: str | None,
-             container_workdir: str | None,
-             container_user: str) -> subprocess.CompletedProcess[str]:
+def _git_run(
+    args: list[str],
+    *,
+    repo: Path,
+    container: str | None,
+    container_workdir: str | None,
+    container_user: str,
+) -> subprocess.CompletedProcess[str]:
     """Run a git command on host or via `docker exec`. Never raises on
     non-zero exit; caller inspects the returned CompletedProcess.
 
@@ -57,19 +66,33 @@ def _git_run(args: list[str], *, repo: Path, container: str | None,
     contact rather than aborting with 'Host key verification failed'.
     Mirrors VS Code Dev Containers' default posture."""
     if container and container_workdir:
-        cmd = ["docker", "exec",
-               "-e", f"SSH_AUTH_SOCK={_SSH_UDS_PATH}",
-               "-e", "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new",
-               "-u", container_user,
-               container, "git", "-C", container_workdir, *args]
+        cmd = [
+            "docker",
+            "exec",
+            "-e",
+            f"SSH_AUTH_SOCK={_SSH_UDS_PATH}",
+            "-e",
+            "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new",
+            "-u",
+            container_user,
+            container,
+            "git",
+            "-C",
+            container_workdir,
+            *args,
+        ]
     else:
         cmd = ["git", "-C", str(repo), *args]
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def _git_cmd(
-    repo: Path, target: Path, branch: str, op: str,
-    container: str | None, container_workdir: str | None,
+    repo: Path,
+    target: Path,
+    branch: str,
+    op: str,
+    container: str | None,
+    container_workdir: str | None,
     container_user: str,
 ) -> list[str]:
     # When run inside a container, `git worktree add/remove` bakes the absolute
@@ -80,36 +103,62 @@ def _git_cmd(
     if container and container_workdir:
         container_target = f"{container_workdir}/.worktrees/{branch}"
         return [
-            "docker", "exec", "-u", container_user, container,
-            "git", "-C", container_workdir, "worktree", op, container_target,
+            "docker",
+            "exec",
+            "-u",
+            container_user,
+            container,
+            "git",
+            "-C",
+            container_workdir,
+            "worktree",
+            op,
+            container_target,
         ]
     return ["git", "-C", str(repo), "worktree", op, str(target)]
 
 
-def _resolve_base(repo: Path, base_override: str | None, *,
-                  container: str | None,
-                  container_workdir: str | None,
-                  container_user: str,
-                  reporter_stage=None) -> tuple[str | None, list[str]]:
+def _resolve_base(
+    repo: Path,
+    base_override: str | None,
+    *,
+    container: str | None,
+    container_workdir: str | None,
+    container_user: str,
+    reporter_stage=None,
+) -> tuple[str | None, list[str]]:
     """Resolve the commit-ish for `git worktree add -B <branch> <target> <commit-ish>`.
 
     Returns (commit_ish, warnings):
       - commit_ish: str or None (None ⇒ branch from HEAD).
       - warnings: list[str] of stderr-bound messages (already prefixed-free).
     """
+
     def run(*args):
-        return _git_run(list(args), repo=repo, container=container,
-                        container_workdir=container_workdir,
-                        container_user=container_user)
+        return _git_run(
+            list(args),
+            repo=repo,
+            container=container,
+            container_workdir=container_workdir,
+            container_user=container_user,
+        )
 
     def origin_exists():
         return run("remote", "get-url", "origin").returncode == 0
 
     def local_branch_exists(name):
-        return run("rev-parse", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0
+        return (
+            run("rev-parse", "--verify", "--quiet", f"refs/heads/{name}").returncode
+            == 0
+        )
 
     def cached_origin_ref_exists(name):
-        return run("rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}").returncode == 0
+        return (
+            run(
+                "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}"
+            ).returncode
+            == 0
+        )
 
     warnings: list[str] = []
 
@@ -196,8 +245,10 @@ def resolve(
 
     user = container_user or "vscode"
     commit_ish, warnings = _resolve_base(
-        repo, base_override,
-        container=container, container_workdir=container_workdir,
+        repo,
+        base_override,
+        container=container,
+        container_workdir=container_workdir,
         container_user=user,
         reporter_stage=reporter_stage,
     )
@@ -216,8 +267,11 @@ def resolve(
         cmd.append(commit_ish)
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        raise WorktreeError(r.stderr.strip() or r.stdout.strip() or "git worktree add failed")
+        raise WorktreeError(
+            r.stderr.strip() or r.stdout.strip() or "git worktree add failed"
+        )
     return target
+
 
 def remove(
     repo: Path,
@@ -231,8 +285,15 @@ def remove(
     target = repo / ".worktrees" / branch
     if not target.exists():
         return
-    cmd = _git_cmd(repo, target, branch, "remove", container, container_workdir,
-                   container_user or "vscode")
+    cmd = _git_cmd(
+        repo,
+        target,
+        branch,
+        "remove",
+        container,
+        container_workdir,
+        container_user or "vscode",
+    )
     if force:
         cmd.append("--force")
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -241,6 +302,7 @@ def remove(
         if _DIRTY_MARKER in stderr:
             raise DirtyWorktreeError(stderr)
         raise WorktreeError(stderr or "git worktree remove failed")
+
 
 def list_existing(repo: Path) -> list[str]:
     """Return names of worktrees under ``<repo>/.worktrees/``, sorted.
@@ -260,6 +322,7 @@ def list_existing(repo: Path) -> list[str]:
     if not base.is_dir():
         return []
     branches: list[str] = []
+
     def walk(directory: Path) -> None:
         try:
             entries = list(directory.iterdir())
@@ -272,5 +335,6 @@ def list_existing(repo: Path) -> list[str]:
         for entry in entries:
             if entry.is_dir():
                 walk(entry)
+
     walk(base)
     return sorted(branches)

@@ -3,8 +3,9 @@ from tmux_agents import startup, tmux, paths
 
 
 def _tmux_error(stderr):
-    return tmux.TmuxError(1, ["tmux", "-L", "agents", "respawn-pane"],
-                          output="", stderr=stderr)
+    return tmux.TmuxError(
+        1, ["tmux", "-L", "agents", "respawn-pane"], output="", stderr=stderr
+    )
 
 
 def _fork_failure():
@@ -21,10 +22,12 @@ def test_respawn_retries_transient_fork_failure_then_succeeds(monkeypatch):
     """A `fork failed` respawn (transient OS pressure during the restore
     burst) is retried; the helper returns once a later attempt succeeds."""
     attempts = []
+
     def fake_respawn(pane_id, *, command):
         attempts.append(pane_id)
         if len(attempts) < 3:
             raise _fork_failure()
+
     monkeypatch.setattr(tmux, "respawn_pane", fake_respawn)
     sleeps: list[float] = []
     monkeypatch.setattr(startup.time, "sleep", lambda s: sleeps.append(s))
@@ -39,12 +42,19 @@ def test_respawn_does_not_retry_non_fork_error(monkeypatch):
     """A respawn failure that is NOT a fork failure (e.g. can't find pane)
     is a real error — raise immediately without retrying or sleeping."""
     attempts = []
+
     def fake_respawn(pane_id, *, command):
         attempts.append(pane_id)
         raise _tmux_error("can't find pane: %13")
+
     monkeypatch.setattr(tmux, "respawn_pane", fake_respawn)
-    monkeypatch.setattr(startup.time, "sleep", lambda s: (_ for _ in ()).throw(
-        AssertionError("should not sleep on a non-transient error")))
+    monkeypatch.setattr(
+        startup.time,
+        "sleep",
+        lambda s: (_ for _ in ()).throw(
+            AssertionError("should not sleep on a non-transient error")
+        ),
+    )
 
     with pytest.raises(tmux.TmuxError):
         startup._respawn_with_retry("%13", "tail -F log")
@@ -55,9 +65,11 @@ def test_respawn_gives_up_after_max_attempts(monkeypatch):
     """Persistent fork failures eventually re-raise so the caller can fall
     back to its skip-and-log handling."""
     attempts = []
+
     def fake_respawn(pane_id, *, command):
         attempts.append(pane_id)
         raise _fork_failure()
+
     monkeypatch.setattr(tmux, "respawn_pane", fake_respawn)
     monkeypatch.setattr(startup.time, "sleep", lambda s: None)
 
@@ -71,6 +83,7 @@ def test_detach_stdio_redirects_std_fds_to_devnull():
     launched via tmux `run-shell` keeps run-shell's capture pipe as stdout and
     tmux paints the child's output (e.g. `devcontainer up` JSON) over the
     active pane."""
+
     class FakeOS:
         O_RDWR = 2
         devnull = "/dev/null"
@@ -97,26 +110,32 @@ def test_detach_stdio_redirects_std_fds_to_devnull():
 
 def test_show_static_text_respawns_heredoc(monkeypatch):
     calls = []
-    monkeypatch.setattr(tmux, "respawn_pane",
-                        lambda pane_id, *, command: calls.append((pane_id, command)))
+    monkeypatch.setattr(
+        tmux,
+        "respawn_pane",
+        lambda pane_id, *, command: calls.append((pane_id, command)),
+    )
     startup.show_static_text("%5", "\n  hello world\n")
     assert len(calls) == 1
     pid, cmd = calls[0]
     assert pid == "%5"
     assert "hello world" in cmd
-    assert cmd.startswith("sh -c 'cat <<\"EOF\"")
+    assert cmd.startswith('sh -c \'cat <<"EOF"')
 
 
 def test_hold_pane_then_exec_shows_log_and_execs(monkeypatch, tmp_state_dir):
     calls = []
-    monkeypatch.setattr(tmux, "respawn_pane",
-                        lambda pane_id, *, command: calls.append((pane_id, command)))
+    monkeypatch.setattr(
+        tmux,
+        "respawn_pane",
+        lambda pane_id, *, command: calls.append((pane_id, command)),
+    )
     log = paths.spawn_log("@1")
     startup.hold_pane_then_exec("%7", log, "claude --resume abc")
     assert len(calls) == 1
     pid, cmd = calls[0]
     assert pid == "%7"
-    assert str(log) in cmd                       # prints the startup log
-    assert "press Enter" in cmd                  # the hold prompt
-    assert "read" in cmd                         # waits for Enter
-    assert "exec claude --resume abc" in cmd     # then launches Claude
+    assert str(log) in cmd  # prints the startup log
+    assert "press Enter" in cmd  # the hold prompt
+    assert "read" in cmd  # waits for Enter
+    assert "exec claude --resume abc" in cmd  # then launches Claude

@@ -9,6 +9,7 @@ Public API used by `agent-new` and `agent-restore`:
 The pump runs detached as `python -m tmux_agents._ssh_pump_script <container>
 <user>`; it delivers + supervises the in-container relay. Nothing is inlined.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,7 +32,8 @@ _PUMP_MODULE = "tmux_agents._ssh_pump_script"
 def has_python3_in_container(container: str, user: str = "vscode") -> bool:
     r = subprocess.run(
         ["docker", "exec", "-u", user, container, "python3", "--version"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return r.returncode == 0
 
@@ -40,8 +42,9 @@ def host_ssh_auth_sock() -> str | None:
     return os.environ.get("SSH_AUTH_SOCK")
 
 
-def is_pump_responsive(container: str, user: str = "vscode",
-                       *, timeout: float = 1.5) -> bool:
+def is_pump_responsive(
+    container: str, user: str = "vscode", *, timeout: float = 1.5
+) -> bool:
     """Probe the in-container UDS by running `ssh-add -l` with a timeout.
     Any return code is fine — what we're guarding against is the pump
     accepting connections but not actually round-tripping bytes (the
@@ -49,10 +52,20 @@ def is_pump_responsive(container: str, user: str = "vscode",
     hang. Timeout → unhealthy → caller should respawn."""
     try:
         subprocess.run(
-            ["docker", "exec", "-u", user,
-             "-e", f"SSH_AUTH_SOCK={UDS_PATH}",
-             container, "ssh-add", "-l"],
-            capture_output=True, text=True, timeout=timeout,
+            [
+                "docker",
+                "exec",
+                "-u",
+                user,
+                "-e",
+                f"SSH_AUTH_SOCK={UDS_PATH}",
+                container,
+                "ssh-add",
+                "-l",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         return True
     except subprocess.TimeoutExpired:
@@ -61,9 +74,13 @@ def is_pump_responsive(container: str, user: str = "vscode",
         return False
 
 
-def wait_until_pump_ready(container: str, user: str = "vscode",
-                          *, deadline_secs: float = 5.0,
-                          poll_interval: float = 0.15) -> bool:
+def wait_until_pump_ready(
+    container: str,
+    user: str = "vscode",
+    *,
+    deadline_secs: float = 5.0,
+    poll_interval: float = 0.15,
+) -> bool:
     """Block until the in-container ssh agent socket actually answers.
 
     Stronger check than `is_pump_responsive`: `ssh-add -l` rc 0 (has
@@ -76,10 +93,20 @@ def wait_until_pump_ready(container: str, user: str = "vscode",
     while True:
         try:
             r = subprocess.run(
-                ["docker", "exec", "-u", user,
-                 "-e", f"SSH_AUTH_SOCK={UDS_PATH}",
-                 container, "ssh-add", "-l"],
-                capture_output=True, text=True, timeout=1.5,
+                [
+                    "docker",
+                    "exec",
+                    "-u",
+                    user,
+                    "-e",
+                    f"SSH_AUTH_SOCK={UDS_PATH}",
+                    container,
+                    "ssh-add",
+                    "-l",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
             )
             if r.returncode in (0, 1):
                 return True
@@ -96,7 +123,8 @@ def pump_pids_for(container: str) -> list[int]:
     container."""
     r = subprocess.run(
         ["pgrep", "-f", _PUMP_MODULE],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if r.returncode != 0:
         return []
@@ -108,7 +136,8 @@ def pump_pids_for(container: str) -> list[int]:
             continue
         ps = subprocess.run(
             ["ps", "-o", "args=", "-p", str(pid)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         # Pump argv: <python> -m tmux_agents._ssh_pump_script <container> <user>.
         # rsplit picks off the last 2 tokens regardless of interpreter path.
@@ -204,7 +233,9 @@ def maybe_spawn_pump(container_name: str, user: str = "vscode") -> PumpResult:
         logger.warning("SSH_AUTH_SOCK not set on host; SSH agent forwarding disabled")
         return PumpResult("disabled_no_sock")
     if not has_python3_in_container(container_name, user):
-        logger.warning("python3 not found in %s; SSH agent forwarding disabled", container_name)
+        logger.warning(
+            "python3 not found in %s; SSH agent forwarding disabled", container_name
+        )
         return PumpResult("disabled_no_python")
     existing = pump_pids_for(container_name)
     if existing and is_pump_responsive(container_name, user):
@@ -213,9 +244,13 @@ def maybe_spawn_pump(container_name: str, user: str = "vscode") -> PumpResult:
     if existing:
         killed = kill_stale_pumps(container_name)
         if killed > 0:
-            logger.info("killed %d stale ssh pump(s) for %s; respawning", killed, container_name)
+            logger.info(
+                "killed %d stale ssh pump(s) for %s; respawning", killed, container_name
+            )
     spawn_pump(container_name, user)
     if not wait_until_pump_ready(container_name, user):
-        logger.warning("ssh pump for %s not ready within budget; continuing", container_name)
+        logger.warning(
+            "ssh pump for %s not ready within budget; continuing", container_name
+        )
         return PumpResult("timed_out", killed_stale=killed)
     return PumpResult("ready", killed_stale=killed)

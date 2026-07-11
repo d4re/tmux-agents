@@ -14,7 +14,9 @@ def test_config_dir_honors_env_and_defaults(monkeypatch, tmp_path):
     assert paths.projects_toml() == tmp_path / "cfg" / "projects.toml"
     monkeypatch.delenv("TMUX_AGENTS_CONFIG_DIR", raising=False)
     monkeypatch.setenv("HOME", "/Users/test")
-    assert paths.projects_toml() == Path("/Users/test/.config/tmux-agents/projects.toml")
+    assert paths.projects_toml() == Path(
+        "/Users/test/.config/tmux-agents/projects.toml"
+    )
 
 
 def test_state_dir_paths(tmp_state_dir):
@@ -32,13 +34,23 @@ def test_config_dir_paths(tmp_config_dir):
 
 def test_worktree_paths(tmp_path):
     wt = tmp_path / "w"
-    assert paths.worktree_state_file(wt, "23") == wt / ".local" / ".tmux-agents" / "state-23.json"
-    assert paths.worktree_pending_dir(wt, "23") == wt / ".local" / ".tmux-agents" / "pending-23"
-    assert paths.worktree_session_id_file(wt, "23") == wt / ".local" / ".tmux-agents" / "session-23.id"
+    assert (
+        paths.worktree_state_file(wt, "23")
+        == wt / ".local" / ".tmux-agents" / "state-23.json"
+    )
+    assert (
+        paths.worktree_pending_dir(wt, "23")
+        == wt / ".local" / ".tmux-agents" / "pending-23"
+    )
+    assert (
+        paths.worktree_session_id_file(wt, "23")
+        == wt / ".local" / ".tmux-agents" / "session-23.id"
+    )
 
 
 def test_spawn_log_path(tmp_state_dir):
     from tmux_agents import paths
+
     assert paths.spawn_log("@7") == tmp_state_dir / "spawn-@7.log"
 
 

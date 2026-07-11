@@ -4,6 +4,7 @@ curses TUI shown in the split-layout bottom pane (`agent-overview`).
 Imported from `state_tick` for the summary chunk and from `commands/overview`
 for the TUI loop. Layout / restore / new use `attach_overview_pane` to wire
 the pane into a window."""
+
 from __future__ import annotations
 import curses
 import logging
@@ -16,13 +17,13 @@ from tmux_agents import paths, state, theme, tmux
 logger = logging.getLogger(__name__)
 
 LABEL = {
-    state.RUNNING:    "running",
-    state.WAITING:    "waiting",
-    state.IDLE:       "idle",
+    state.RUNNING: "running",
+    state.WAITING: "waiting",
+    state.IDLE: "idle",
     state.BACKGROUND: "background",
-    state.SLEEPING:   "sleeping",
-    state.ERRORED:    "errored",
-    state.STARTING:   "starting",
+    state.SLEEPING: "sleeping",
+    state.ERRORED: "errored",
+    state.STARTING: "starting",
 }
 
 TMUX_RESET = "#[default]"
@@ -30,18 +31,21 @@ TMUX_RESET = "#[default]"
 
 # ===== Row model =====
 
+
 @dataclass
 class Row:
     kind: Literal["header", "agent"]
     repo: str
-    count: int = 0           # header-only
-    folded: bool = False     # header-only
+    count: int = 0  # header-only
+    folded: bool = False  # header-only
     win: tmux.Window | None = None  # agent-only
-    code: str = ""                  # agent-only
-    overlay_count: int = 0          # agent-only (background/sleeping item count)
+    code: str = ""  # agent-only
+    overlay_count: int = 0  # agent-only (background/sleeping item count)
 
 
-def build_rows(folds: dict[str, bool], *, windows: list[tmux.Window] | None = None) -> list[Row]:
+def build_rows(
+    folds: dict[str, bool], *, windows: list[tmux.Window] | None = None
+) -> list[Row]:
     if windows is None:
         windows = tmux.list_windows(tmux.SESSION)
     rows: list[Row] = []
@@ -52,7 +56,15 @@ def build_rows(folds: dict[str, bool], *, windows: list[tmux.Window] | None = No
             continue
         for w in wins:
             code, overlay_count = _parse_state_code(w.state_code)
-            rows.append(Row(kind="agent", repo=repo, win=w, code=code, overlay_count=overlay_count))
+            rows.append(
+                Row(
+                    kind="agent",
+                    repo=repo,
+                    win=w,
+                    code=code,
+                    overlay_count=overlay_count,
+                )
+            )
     return rows
 
 
@@ -75,8 +87,9 @@ def format_header(row: Row) -> str:
     return f"{glyph} {row.repo}  ({row.count} agent{plural})"
 
 
-def format_line_plain(win: tmux.Window, code: str, count: int, *,
-                      mark_active: bool = True) -> str:
+def format_line_plain(
+    win: tmux.Window, code: str, count: int, *, mark_active: bool = True
+) -> str:
     """No-escape row text. The curses TUI paints color via curses attribs and
     passes `mark_active=False` because it handles the cursor marker itself."""
     indent = "> " if (win.active and mark_active) else "  "
@@ -106,6 +119,7 @@ def _row_label(code: str, count: int) -> str:
 
 # ===== Status-line summary (hot path, called from state_tick) =====
 
+
 def empty_counts() -> dict[str, int]:
     return {c: 0 for c in LABEL}
 
@@ -132,10 +146,17 @@ def _summary_counts() -> dict[str, int]:
 
 
 def _summary(tok, counts: dict[str, int]) -> str:
-    summary = "  ".join(tok(c, c, " ") for c in (
-        state.RUNNING, state.WAITING, state.BACKGROUND, state.SLEEPING,
-        state.IDLE, state.ERRORED,
-    ))
+    summary = "  ".join(
+        tok(c, c, " ")
+        for c in (
+            state.RUNNING,
+            state.WAITING,
+            state.BACKGROUND,
+            state.SLEEPING,
+            state.IDLE,
+            state.ERRORED,
+        )
+    )
     # STARTING uses a different label/sep ("starting: N") and is hidden when zero.
     if counts[state.STARTING] > 0:
         summary += "  " + tok(state.STARTING, LABEL[state.STARTING], ": ")
@@ -143,6 +164,7 @@ def _summary(tok, counts: dict[str, int]) -> str:
 
 
 # ===== Fold persistence =====
+
 
 def load_folds() -> dict[str, bool]:
     raw = paths.read_json_or(paths.folds_file(), {})
@@ -173,9 +195,11 @@ def load_folds_with_gc(*, windows: list[tmux.Window] | None = None) -> dict[str,
 
 # ===== Curses TUI: cursor model =====
 
+
 class Cursor(NamedTuple):
     """Identifies a row by its content (window_id for agents, repo name for
     headers) so it survives row reorderings, additions, and removals."""
+
     kind: Literal["agent", "header"]
     key: str
 
@@ -277,11 +301,18 @@ def _restore_alert(n: int) -> str:
     plural = "" if n == 1 else "s"
     return f"⚠ {n} agent{plural} down — press {_PREFIX} R to restore"
 
+
 # State-color pair allocations. Inactive rows use the state fg on the
 # default bg; active rows invert (selected_fg on state bg) for the
 # bg-block effect that matches the plain-text and status-line renderings.
-_STATE_CODES = (state.RUNNING, state.WAITING, state.BACKGROUND,
-                state.SLEEPING, state.IDLE, state.ERRORED)
+_STATE_CODES = (
+    state.RUNNING,
+    state.WAITING,
+    state.BACKGROUND,
+    state.SLEEPING,
+    state.IDLE,
+    state.ERRORED,
+)
 _PAIR_INACTIVE = {code: i + 1 for i, code in enumerate(_STATE_CODES)}
 _PAIR_ACTIVE = {code: i + 1 + len(_STATE_CODES) for i, code in enumerate(_STATE_CODES)}
 
@@ -298,12 +329,14 @@ def _hex_to_xterm256(hex_color: str) -> int:
     """Map '#RRGGBB' to the closest xterm-256 color cube index."""
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
     def to6(v: int) -> int:
         if v < 48:
             return 0
         if v < 115:
             return 1
         return (v - 35) // 40
+
     return 16 + 36 * to6(r) + 6 * to6(g) + to6(b)
 
 
@@ -393,17 +426,27 @@ def render_curses(stdscr, rows: list[Row], cursor: Cursor | None):
 
 # ===== Subprocess actions (popups) =====
 
+
 def _popen(argv: list[str]) -> None:
     """Wrapper to make subprocess.Popen monkeypatchable in tests."""
     subprocess.Popen(argv)
 
 
 def spawn_new_agent() -> None:
-    _popen([
-        "tmux", "-L", "agents",
-        "display-popup", "-E", "-w", "60%", "-h", "60%",
-        "agent-new",
-    ])
+    _popen(
+        [
+            "tmux",
+            "-L",
+            "agents",
+            "display-popup",
+            "-E",
+            "-w",
+            "60%",
+            "-h",
+            "60%",
+            "agent-new",
+        ]
+    )
 
 
 def restore_dead() -> None:
@@ -422,19 +465,41 @@ def kill_at(cursor: Cursor | None) -> None:
     wid = _agent_window_id(cursor)
     if wid is None:
         return
-    _popen(["tmux", "-L", "agents", "display-popup", "-E", "-w", "50%", "-h", "20%",
-            f"agent-kill --window-id {wid}"])
+    _popen(
+        [
+            "tmux",
+            "-L",
+            "agents",
+            "display-popup",
+            "-E",
+            "-w",
+            "50%",
+            "-h",
+            "20%",
+            f"agent-kill --window-id {wid}",
+        ]
+    )
 
 
 def rename_at(cursor: Cursor | None) -> None:
     wid = _agent_window_id(cursor)
     if wid is None:
         return
-    _popen(["tmux", "-L", "agents", "command-prompt", "-p", "new branch name:",
-            f"run-shell 'agent-rename --window-id {wid} %%'"])
+    _popen(
+        [
+            "tmux",
+            "-L",
+            "agents",
+            "command-prompt",
+            "-p",
+            "new branch name:",
+            f"run-shell 'agent-rename --window-id {wid} %%'",
+        ]
+    )
 
 
 # ===== Pane wiring =====
+
 
 def attach_overview_pane(window_id: str) -> None:
     """Bottom 25% overview pane, tagged @role=overview so tmux's
@@ -451,6 +516,7 @@ def attach_overview_pane(window_id: str) -> None:
 
 
 # ===== Curses TUI: event loop state + handlers =====
+
 
 @dataclass
 class TuiState:
@@ -469,8 +535,13 @@ def make_initial_state(self_pane_id: str) -> TuiState:
     folds = load_folds_with_gc(windows=windows)
     rows = build_rows(folds, windows=windows)
     cursor, last_active = auto_track_cursor(rows, None, None)
-    return TuiState(folds=folds, rows=rows, cursor=cursor,
-                    last_active=last_active, self_pane_id=self_pane_id)
+    return TuiState(
+        folds=folds,
+        rows=rows,
+        cursor=cursor,
+        last_active=last_active,
+        self_pane_id=self_pane_id,
+    )
 
 
 def handle_tick(state: TuiState) -> None:
@@ -480,7 +551,8 @@ def handle_tick(state: TuiState) -> None:
     state.folds = load_folds()
     state.rows = build_rows(state.folds)
     state.cursor, state.last_active = auto_track_cursor(
-        state.rows, state.cursor, state.last_active)
+        state.rows, state.cursor, state.last_active
+    )
 
 
 def _refresh_after_activation(state: TuiState) -> None:
@@ -505,13 +577,13 @@ def handle_key(state: TuiState, ch: int) -> None:
         if state.cursor is not None:
             state.cursor = activate_target(state.cursor, state.folds)
             _refresh_after_activation(state)
-    elif ch == ord('N'):
+    elif ch == ord("N"):
         spawn_new_agent()
-    elif ch == ord('K'):
+    elif ch == ord("K"):
         kill_at(state.cursor)
-    elif ch == ord('R'):
+    elif ch == ord("R"):
         restore_dead()
-    elif ch == ord('E'):
+    elif ch == ord("E"):
         rename_at(state.cursor)
 
 
