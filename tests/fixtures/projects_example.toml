@@ -1,0 +1,10 @@
+[api]
+repo = "/Users/remi/dev/api"
+container = "api-devcontainer"
+container_workdir = "/work"
+up_cmd = "cd {repo} && devcontainer up --workspace-folder ."
+exec_cmd = "docker exec -it {container} bash -lc 'cd {workdir} && claude'"
+
+[scripts]
+repo = "/Users/remi/dev/scripts"
+exec_cmd = "cd {workdir} && claude"

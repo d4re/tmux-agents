@@ -1,0 +1,17 @@
+# tmux-agents theme — optional. Delete this file to use built-in defaults.
+#
+# Copy to theme.toml and edit. All keys are optional; missing keys fall
+# back to the mode's built-ins.
+
+# Palette baseline. "dark" (default) for dark-background terminals,
+# "light" for light-background terminals.
+mode = "dark"
+
+# Per-state overrides. Values must be "#rrggbb" (6-char hex, leading #).
+# Uncomment and change individual lines to customize.
+[colors]
+# running = "#87af5f"   # R — churning autopilot
+# waiting = "#ffd75f"   # W — quick permission / short answer (loudest)
+# idle    = "#5fafff"   # I — needs your real input
+# loop    = "#c678dd"   # L — self-managing via /loop
+# errored = "#ff5f5f"   # X — something broke

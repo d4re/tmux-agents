@@ -1,0 +1,16 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # tmux enables the end-to-end smoke test (it self-skips when absent)
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run pytest -q

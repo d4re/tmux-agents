@@ -1,0 +1,103 @@
+{
+  "tui": "fullscreen",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" init" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" clear-completed" },
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" running" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" reconcile" },
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" idle" }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" reconcile" },
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" idle" }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          { "type": "command", "command": "printf '\\a'" },
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" waiting" }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" running" }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" running" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" running" }
+        ]
+      },
+      {
+        "matcher": "ScheduleWakeup",
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" add-wakeup" }
+        ]
+      },
+      {
+        "matcher": "CronCreate",
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" add-cron" }
+        ]
+      },
+      {
+        "matcher": "CronDelete",
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" del-cron" }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" add-subagent" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" add-bgshell" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh\" cleanup" }
+        ]
+      }
+    ]
+  }
+}

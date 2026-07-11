@@ -1,0 +1,17 @@
+# tmux-agents project definitions.
+# One stanza per project. Copy to ~/.config/tmux-agents/projects.toml and edit.
+
+# -------- Devcontainer project --------
+# [api]
+# repo = "/Users/you/dev/api"
+# container = "api-devcontainer"
+# container_workdir = "/work"
+# up_cmd = "cd {repo} && devcontainer up --workspace-folder ."
+# exec_cmd = "docker exec -it -e TMUX_PANE {container} bash -lc 'cd {workdir} && claude{resume_args}'"
+
+# -------- Host-only project --------
+# exec_cmd is OPTIONAL; defaults to:
+#   cd {workdir} && exec claude{resume_args}
+# Override only if you need something custom.
+# [scripts]
+# repo = "/Users/you/dev/scripts"

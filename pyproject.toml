@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tmux-agents"
+version = "0.2.0"
+description = "tmux-based multi-agent Claude Code runner"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "iterfzf>=1.5",
+    "croniter>=2.0",
+]
+
+[project.urls]
+Repository = "https://github.com/d4re/tmux-agents"
+
+[project.scripts]
+agents                     = "tmux_agents.commands.launcher:main"
+agent-new                  = "tmux_agents.commands.new:main"
+agent-kill                 = "tmux_agents.commands.kill:main"
+agent-state                = "tmux_agents.commands.state_tick:main"
+agent-overview             = "tmux_agents.commands.overview:main"
+agent-rename               = "tmux_agents.commands.rename:main"
+agent-layout               = "tmux_agents.commands.layout:main"
+agent-restore              = "tmux_agents.commands.restore:main"
+agent-vscode               = "tmux_agents.commands.vscode:main"
+agent-terminal             = "tmux_agents.commands.terminal:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tmux_agents = [
+    "hooks/agents.json",
+    "hooks/write-state.sh",
+    "_ssh_framing.py",
+    "_ssh_relay_script.py",
+    "_ssh_pump_script.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

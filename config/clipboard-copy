@@ -1,0 +1,22 @@
+#!/bin/sh
+# Cross-platform clipboard sink for agents.conf's copy bindings. Reads
+# from stdin, writes to whichever system clipboard tool is available, and
+# silently discards on a bare host with none (matches the pre-existing
+# 2>/dev/null-swallow behavior of the OSC 52 bridge hook this feeds).
+if command -v pbcopy >/dev/null 2>&1; then
+  exec pbcopy
+elif command -v clip.exe >/dev/null 2>&1; then
+  exec clip.exe
+elif [ -x /mnt/c/Windows/System32/clip.exe ]; then
+  # WSL with `[interop] appendWindowsPath=false` — clip.exe still works,
+  # it's just not on PATH. Fall back to its fixed location.
+  exec /mnt/c/Windows/System32/clip.exe
+elif command -v wl-copy >/dev/null 2>&1; then
+  exec wl-copy
+elif command -v xclip >/dev/null 2>&1; then
+  exec xclip -selection clipboard
+elif command -v xsel >/dev/null 2>&1; then
+  exec xsel --clipboard --input
+else
+  exec cat >/dev/null
+fi
