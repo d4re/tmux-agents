@@ -15,7 +15,6 @@ import select
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 from tmux_agents import paths, tmux, logging_setup
 

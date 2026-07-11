@@ -5,13 +5,9 @@ These tests verify that the correct stage lines appear in the spawn-log file
 hold, or error) is correct.  All tests use the _provision_env helper + the
 `tmp_state_dir` fixture so TMUX_AGENTS_STATE_DIR is isolated.
 """
-import io
 import os
-import sys
-from pathlib import Path
-import pytest
 
-from tmux_agents import config, container, paths, provisioning, ssh_forward, worktree
+from tmux_agents import container, provisioning, ssh_forward, worktree
 from tmux_agents import startup, phase
 from tmux_agents import windows as windows_mod
 from tmux_agents.commands import new

@@ -3,7 +3,6 @@ import subprocess
 import sys
 from unittest.mock import MagicMock
 
-import pytest
 
 from tmux_agents import ssh_forward
 

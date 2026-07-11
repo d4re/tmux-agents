@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from tmux_agents import container as container_mod, paths, tmux, windows as windows_mod

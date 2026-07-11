@@ -1,4 +1,3 @@
-import os
 import pytest
 from tmux_agents import startup, tmux, paths
 

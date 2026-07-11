@@ -1,6 +1,4 @@
-import pytest
 from tmux_agents import ssh_forward
-from tmux_agents.ssh_forward import PumpResult
 
 
 def test_pumpresult_outcome_disabled_no_sock(monkeypatch):

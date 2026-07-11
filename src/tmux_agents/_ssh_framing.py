@@ -113,7 +113,8 @@ def splice(raw_sock, framed_in, framed_out, *, buf_size: int = 16384) -> None:
 
     t1 = threading.Thread(target=raw_to_framed, daemon=True)
     t2 = threading.Thread(target=framed_to_raw, daemon=True)
-    t1.start(); t2.start()
+    t1.start()
+    t2.start()
     done.wait()
     import socket
     try:
