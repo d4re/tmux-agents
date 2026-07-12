@@ -18,6 +18,16 @@ def test_placeholder_command_is_tail_F(tmp_state_dir):
     assert str(paths.spawn_log("@9")) in cmd
 
 
+def test_placeholder_command_pre_creates_log(tmp_state_dir):
+    """The log must exist before the pane runs `tail -F`, or tail prints
+    "cannot open …: No such file or directory" / "has appeared" into the pane
+    while the detached worker is still starting up."""
+    log = paths.spawn_log("@9")
+    assert not log.exists()
+    startup.placeholder_command("@9")
+    assert log.exists()
+
+
 def test_respawn_retries_transient_fork_failure_then_succeeds(monkeypatch):
     """A `fork failed` respawn (transient OS pressure during the restore
     burst) is retried; the helper returns once a later attempt succeeds."""

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import io
 import logging
+import os
 import shlex
 import sys
 import time
@@ -289,6 +290,14 @@ def main(argv: list[str] | None = None) -> int:
     project = args.project_opt or args.project
 
     if args.worker:
+        # Same detach dance as `agent-new --provision`: run-shell -b keeps the
+        # job's stdout/stderr pipe, and tmux paints any output (devcontainer
+        # up's JSON, a nonzero exit notice) over the active pane in view mode
+        # until a key is pressed. Fork, drop the pipe, let the parent exit 0.
+        if os.fork() > 0:
+            return 0
+        os.setsid()
+        startup._detach_stdio()
         proj = projects.get(project)
         if proj is None:
             logger.error("worker: unknown project %r", project)

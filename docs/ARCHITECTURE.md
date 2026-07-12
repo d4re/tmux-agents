@@ -156,7 +156,8 @@ Steps in `commands/new.py` order:
    immediately with a placeholder pane running
    `startup.placeholder_command(window_id)` — a `tail -F` on the per-window
    spawn log (`paths.spawn_log(window_id)`, i.e.
-   `<state_dir>/spawn-<window_id>.log`). Window name is `<project>` (no
+   `<state_dir>/spawn-<window_id>.log`), pre-created empty so tail never
+   prints "cannot open …" noise while the worker starts. Window name is `<project>` (no
    branch) or `<project>:<branch>`. To keep same-project windows
    contiguous, `_last_sibling_window_id` passes the highest-indexed
    sibling as `after_target`; `renumber-windows on` collapses the
@@ -254,7 +255,7 @@ shell-outs to the dedicated module rather than inline.
 | `startup.py` | Shared spawn/restore primitives used by both `agent-new` and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `_respawn_with_retry` (fork-safe respawn with backoff), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec). |
 | `progress.py` | Per-stage progress display. `Reporter` writes to a single output stream; `MultiReporter` fans out to N reporters for events shared across restore's project groups. Symbols: `▸` info / `✓` success / `!` warning (non-fatal) / `✗` fatal failure. Both `agent-new --provision` and `agent-restore` write each window's progress to `<state_dir>/spawn-<window_id>.log` (`paths.spawn_log`); the placeholder pane runs `tail -F <log>` and is replaced by `respawn-pane` when the worker finishes. |
 | `commands/restore.py` | The `agent-restore` worker. Snapshot reading + validation, project grouping, placeholder pre-creation, container ensure-up + per-entry respawn, failure logging + error display. Imports shared primitives from `startup.py`. |
-| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when any agent is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump, then re-exec each pane via `exec_cmd.build` (`claude --resume <id>`). Per-pane failures isolated; container-rebuild failure marks every pane `X`. |
+| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when any agent is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): fork/setsid/detach-stdio (same as `agent-new --provision` — otherwise tmux paints the worker's output, e.g. `devcontainer up` JSON, over the active pane in view mode), then show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump, then re-exec each pane via `exec_cmd.build` (`claude --resume <id>`). Per-pane failures isolated; container-rebuild failure marks every pane `X`. |
 | `commands/*.py` | Thin CLI orchestrators (one per `[project.scripts]` entry). Logic lives in the modules above. |
 
 ### How `_ssh_*.py` reach the container

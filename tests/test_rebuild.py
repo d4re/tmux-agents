@@ -292,6 +292,10 @@ def test_main_worker_branch_invokes_run_worker(
     _write_projects(
         tmp_config_dir, '[webapp]\nrepo = "/r/webapp"\ndevcontainer = true\n'
     )
+    # Simulate being in the forked child: fork() returns 0, setsid/detach no-op.
+    monkeypatch.setattr(rebuild.os, "fork", lambda: 0)
+    monkeypatch.setattr(rebuild.os, "setsid", lambda: None)
+    monkeypatch.setattr(startup, "_detach_stdio", lambda: None)
     monkeypatch.setattr(tmux, "list_windows", lambda s: [])
     seen = {}
     monkeypatch.setattr(
@@ -304,3 +308,21 @@ def test_main_worker_branch_invokes_run_worker(
     rc = rebuild.main(["--worker", "--project", "webapp", "--no-cache"])
     assert rc == 0
     assert seen == {"proj": "webapp", "n": 0, "no_cache": True}
+
+
+def test_main_worker_parent_detaches_without_running(
+    monkeypatch, tmp_config_dir, tmp_state_dir
+):
+    """The fork parent must return 0 immediately, releasing run-shell's output
+    pipe — otherwise tmux paints the worker's output (devcontainer up JSON)
+    over the active pane in view mode until a key is pressed."""
+    _write_projects(
+        tmp_config_dir, '[webapp]\nrepo = "/r/webapp"\ndevcontainer = true\n'
+    )
+    monkeypatch.setattr(rebuild.os, "fork", lambda: 12345)  # parent path
+    monkeypatch.setattr(
+        rebuild,
+        "_run_worker",
+        lambda *a, **k: pytest.fail("parent must not run the worker"),
+    )
+    assert rebuild.main(["--worker", "--project", "webapp"]) == 0
