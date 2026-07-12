@@ -16,8 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
+      # keep in sync via the Makefile: `make lint` is the local equivalent
+      - run: make lint
 
   test:
     runs-on: ubuntu-latest
@@ -32,4 +32,5 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv run pytest -q
+      # keep in sync via the Makefile: `make test` is the local equivalent
+      - run: make test

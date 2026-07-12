@@ -85,7 +85,7 @@ all, it falls back to creating the worktree from HEAD (with a warning).
 
 ## Theming
 
-State colors (R/W/I/L/X) default to a dark palette tuned for truecolor
+State colors (R/W/B/Z/I/X/S) default to a dark palette tuned for truecolor
 terminals. To switch to a light palette or override individual states,
 copy the installed example and edit:
 
@@ -256,10 +256,6 @@ displays a clear error message and the overview shows `X` for it; fix
 the underlying issue and re-run `agent-restore` (`Ctrl-Space R`), or kill
 the window with Ctrl-Space K.
 
-Replaces the previous tmux-resurrect / tmux-continuum integration,
-which did not work in environments where multiple tmux servers run
-side-by-side.
-
 ## Copy / paste
 
 Mouse-drag inside a pane copies to the system clipboard on release.
@@ -324,7 +320,11 @@ Ctrl-Space R to restore`) in the errored color.
 ## Developer notes
 
 - Python 3.11+ required (stdlib `tomllib`).
-- Tests: `pip install -e . pytest && pytest`.
+- `make check` runs everything CI gates on (`ruff check`, `ruff format
+  --check`, `pytest`); individual targets: `make test`, `make lint`,
+  `make format`. The `Makefile` also has the dev-loop targets
+  (`reinstall`, `conf-sync`) — see its comments for caveats.
 - Layout: `src/tmux_agents/` has one module per responsibility
   (`config`, `state`, `tmux`, `worktree`, `container`, `paths`, `overview`) plus
-  thin command orchestrators under `commands/`.
+  thin command orchestrators under `commands/`. `docs/ARCHITECTURE.md`
+  has the full map.

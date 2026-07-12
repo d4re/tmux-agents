@@ -20,6 +20,26 @@ dev-link:
 Tradeoff: convenient for development, meaningless for end users. Keep it
 opt-in and document it as a developer-only target.
 
+**Multi-worktree hazard (why this stayed in the backlog when the
+Makefile was added):** with several agents working in different
+`.worktrees/` checkouts at once, each `dev-link` run silently repoints the
+single live symlink and the single editable install at *that* checkout —
+whoever ran it last hijacks the live setup, and the symlink keeps tracking
+that worktree's future edits. The copy-based `make reinstall` /
+`make conf-sync` have a one-shot version of the same problem but at least
+stop tracking. Any implementation needs an answer for this (e.g. refuse to
+run from inside `.worktrees/`).
+
+## Devcontainer for this repo
+
+Planned: develop tmux-agents itself inside a devcontainer like the other
+projects. When building it, the image needs the dev-loop tools: `make`
+(the `Makefile` is the canonical command surface), `uv`, `tmux` (for
+`test_smoke.py`), and git. Note the wrinkle that `make reinstall` /
+`make conf-sync` mutate *host* state (the installed uv tool, the live
+`~/.config/tmux-agents/`) — from inside a container those either need the
+relevant paths mounted or must stay host-only steps.
+
 ## Cleaner window-status-format
 
 The default tmux window list shows raw window names, which can get long when
