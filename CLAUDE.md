@@ -29,7 +29,6 @@ ones:
 
 - Socket: `tmux -L agents ...`
 - Config: `~/.config/tmux-agents/agents.conf`
-- Plugins: `~/.config/tmux-agents/plugins/` (legacy; tmux-resurrect/continuum no longer used)
 
 Nothing is written under `~/.config/tmux/`. The isolation is there so the
 user's zsh4humans (z4h) auto-started tmux doesn't pick up this config. When
@@ -47,11 +46,26 @@ restore" section below for the full flow.
 
 ## Dev loop — read this before making changes
 
+Common commands are `Makefile` targets — prefer them over retyping raw
+invocations:
+
+| Target | Does |
+|---|---|
+| `make check` | Everything CI gates on: `ruff check` + `ruff format --check` + `pytest`. Run before pushing — tests alone are not the whole CI gate. |
+| `make test` / `make lint` / `make format` | The individual pieces. |
+| `make reinstall` | Reinstall the uv tool from this checkout (see below). |
+| `make conf-sync` | Copy `agents.conf` to the live config + reload the server. |
+
+`reinstall` and `conf-sync` mutate **global** state (the one installed
+tool, the one live config) — with multiple agents in sibling worktrees,
+whoever ran them last wins. Only run them when this worktree's code
+should be live.
+
 The install uses `uv tool install` from the repo. Editing source does **not**
 update the installed executables. After a code change:
 
 ```
-uv tool install --reinstall --no-cache .
+uv tool install --reinstall --no-cache .   # = make reinstall
 ```
 
 `--no-cache` is load-bearing: `--reinstall` alone can pull a stale wheel from
@@ -62,18 +76,30 @@ behaves like the old code after a reinstall, read
 directly to confirm the install is the culprit before debugging elsewhere.
 
 Edits to `agents.conf` in the repo also don't take effect until they reach
-`~/.config/tmux-agents/agents.conf`. For quick iteration:
+`~/.config/tmux-agents/agents.conf`. `make conf-sync` does the copy +
+live-server reload in one step.
 
-```
-cp agents.conf ~/.config/tmux-agents/agents.conf
-tmux -L agents source-file ~/.config/tmux-agents/agents.conf
-```
-
-There's a `BACKLOG.md` item for a `make dev-link` helper that would symlink
-the conf and `uv tool install --editable`. Not built yet.
+There's a `BACKLOG.md` item for a `dev-link` helper that would symlink
+the conf and `uv tool install --editable`. Deliberately not built — see
+the multi-worktree hazard noted on that item.
 
 Tests run with `uv run pytest -q`. The suite is fast (under a second); run it
-before committing.
+before committing. CI also gates on `ruff check` and `ruff format --check`,
+so `make check` is the real pre-push bar.
+
+## Agent support files
+
+- `AGENTS.md` is a symlink to this file (for non-Claude tooling); edit
+  CLAUDE.md only.
+- Project skills live in `.claude/skills/`: `verify` (how to verify a
+  change end-to-end without touching the user's live server) and
+  `debug-state` (state-pipeline introspection commands + symptom table).
+- `.claude/settings.json` (checked in) pre-allows the safe read-only
+  commands: `make check/test/lint/format`, `uv run pytest`/`ruff`, and
+  the read-only `tmux -L agents list-*`/`show-options` calls.
+- `.claude/settings.local.json` here is **provisioned by tmux-agents
+  itself** (this repo is dogfooded); never edit it by hand — it's
+  regenerated from `hooks/agents.json`.
 
 ## Worktrees are managed externally
 
@@ -246,7 +272,3 @@ Host-only projects now have a smart default `exec_cmd`
 (`cd {workdir} && exec claude{resume_args}`) symmetric with container
 projects, so users no longer need to hand-write the placeholder.
 
-tmux-resurrect / tmux-continuum are no longer installed. Existing
-plugin directories under `~/.config/tmux-agents/plugins/` are left
-as-is by `install.sh` (defensive: we never delete things we did not
-place this run).

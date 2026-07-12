@@ -512,10 +512,6 @@ restore`, in the errored color. Footers spell the full `Ctrl-Space` chord
 keys still work while the overview pane itself is focused. Because R moved
 to restore, `agent-rename` is bound to `Ctrl-Space E` / `E`.
 
-tmux-resurrect / tmux-continuum are not used. Existing plugin clones
-under `~/.config/tmux-agents/plugins/` are left in place by
-`install.sh`.
-
 ### Logging
 
 All diagnostics route through Python's `logging` module via
@@ -549,8 +545,6 @@ selection requires holding Option (iTerm2/Ghostty/Alacritty) or Fn
   agents.conf                         tmux config (loaded via -f)
   projects.toml                       user-edited project definitions
   theme.toml(.example)                optional palette overrides
-  plugins/                            tpm + resurrect + continuum
-  resurrect/                          continuum auto-saves
   windows/<window_id>.json            window→worktree mapping (host-side)
   windows.previous/<window_id>.json   transient; populated by the
                                       launcher on fresh-server restore,

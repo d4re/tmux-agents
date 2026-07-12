@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(make check:*)",
+      "Bash(make test:*)",
+      "Bash(make lint:*)",
+      "Bash(make format:*)",
+      "Bash(git worktree list:*)",
+      "Bash(tmux -L agents list-sessions:*)",
+      "Bash(tmux -L agents list-windows:*)",
+      "Bash(tmux -L agents list-panes:*)",
+      "Bash(tmux -L agents show-options:*)",
+      "Bash(tmux -L agents display-message:*)"
+    ]
+  }
+}

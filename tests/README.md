@@ -53,12 +53,13 @@ expect to update the corresponding test:
   intact.
 - **`test_hook_snippets.py`** — runs each shell command from
   `src/tmux_agents/hooks/agents.json` against a tmp `CLAUDE_PROJECT_DIR`
-  and asserts the resulting `state-<pane>.json` and `crons-<pane>.count`
-  files match expectations across the full lifecycle (SessionStart →
+  and asserts the resulting `state-<pane>.json` and `pending-<pane>/`
+  marker files match expectations across the full lifecycle (SessionStart →
   Notification → PostToolUse / PostToolUseFailure / PermissionDenied →
-  Stop / StopFailure → SessionEnd, plus CronCreate/Delete counting and
-  the floor-at-zero rule). Catches quoting drift, missing handlers, and
-  state-machine regressions in the hook bodies.
+  Stop / StopFailure → SessionEnd, plus the `add-`/`del-` marker
+  subcommands and the `clear-completed` / `reconcile` reaping paths).
+  Catches quoting drift, missing handlers, and state-machine regressions
+  in the hook bodies.
 - **`test_agents_hooks_template.py`** — schema/structure check on the
   hooks JSON template (matchers, top-level keys, no extra/missing
   events).

@@ -23,12 +23,13 @@ if [[ -f "$CONFIG_AGENTS/agents.conf" ]]; then
   echo "    removing $CONFIG_AGENTS/agents.conf"
   rm "$CONFIG_AGENTS/agents.conf"
 fi
+# Legacy dirs from installs that predate the TPM/resurrect removal.
 if [[ -d "$CONFIG_AGENTS/plugins" ]]; then
-  echo "    removing $CONFIG_AGENTS/plugins/"
+  echo "    removing $CONFIG_AGENTS/plugins/ (legacy)"
   rm -rf "$CONFIG_AGENTS/plugins"
 fi
 if [[ -d "$CONFIG_AGENTS/resurrect" ]]; then
-  echo "    removing $CONFIG_AGENTS/resurrect/ (saved session states)"
+  echo "    removing $CONFIG_AGENTS/resurrect/ (legacy)"
   rm -rf "$CONFIG_AGENTS/resurrect"
 fi
 if [[ -f "$CONFIG_AGENTS/projects.toml" ]]; then
