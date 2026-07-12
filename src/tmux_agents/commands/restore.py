@@ -10,7 +10,6 @@ import dataclasses
 import io
 import logging
 import os
-import shlex
 import shutil
 import time
 from collections import OrderedDict
@@ -23,6 +22,7 @@ from typing import Literal
 from tmux_agents import (
     config,
     container,
+    exec_cmd,
     logging_setup,
     overview,
     paths,
@@ -271,22 +271,12 @@ def pre_create_windows(
 
 def _build_exec_cmd(proj, e: Entry, container_name: str | None) -> str:
     """Substitute exec_cmd, injecting ` --resume <id>` via {resume_args}."""
-    resume_args = ""
-    if e.claude_session_id:
-        resume_args = f" --resume {shlex.quote(e.claude_session_id)}"
-        if "{resume_args}" not in proj.exec_cmd:
-            logger.warning(
-                "%s: project %r has a custom exec_cmd without {resume_args} placeholder; "
-                "Claude will not auto-resume. Add {resume_args} after `claude` in "
-                "projects.toml to enable resume.",
-                e.window_id,
-                proj.name,
-            )
-    return proj.substitute(
-        proj.exec_cmd,
+    return exec_cmd.build(
+        proj,
         branch=e.branch,
+        claude_session_id=e.claude_session_id,
         container_name=container_name,
-        resume_args=resume_args,
+        label=e.window_id,
     )
 
 

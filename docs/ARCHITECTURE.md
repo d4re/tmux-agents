@@ -8,10 +8,10 @@ should be kept in sync as the code evolves — see CLAUDE.md.
 
 A Python package plus a tmux config and a hook bundle that lets one user run
 4–6 concurrent Claude Code agents in a single tmux session, each typically
-running inside a project's devcontainer. The package ships ten CLI entry
-points (`agents`, `agent-new`, `agent-kill`, `agent-state`, `agent-overview`,
-`agent-rename`, `agent-layout`, `agent-restore`, `agent-vscode`,
-`agent-terminal`)
+running inside a project's devcontainer. The package ships eleven CLI entry
+points (`agents`, `agent-new`, `agent-kill`, `agent-rebuild`, `agent-state`,
+`agent-overview`, `agent-rename`, `agent-layout`, `agent-restore`,
+`agent-vscode`, `agent-terminal`)
 that the tmux config wires into keybindings, hooks, and the status line.
 
 ## Isolation model
@@ -239,12 +239,13 @@ shell-outs to the dedicated module rather than inline.
 | `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, split, kill, option setters. |
 | `windows.py` | The `<config_dir>/windows/<window_id>.json` mapping that lets the host tick translate a tmux window into the worktree path + pane id its hooks write under. |
 | `config.py` | `projects.toml` loader. Resolves `container` vs `devcontainer = true`, fills in defaults (`up_cmd`, `exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
-| `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), and `ensure_up` (runs `up_cmd` once if down). |
+| `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), `ensure_up` (runs `up_cmd` once if down), and `rebuild` (force-recreate: devcontainer projects append `--remove-existing-container` [+ `--build-no-cache`] to `up_cmd`; named-container projects `docker rm -f` then re-run `up_cmd`). |
+| `exec_cmd.py` | Shared builder `build(proj, *, branch, claude_session_id, container_name, label)` for the pane launch command, injecting ` --resume <id>` via the `{resume_args}` placeholder. Used by both `agent-restore` and `agent-rebuild` so resume semantics stay identical. |
 | `worktree.py` | `git worktree add/remove`. `_resolve_base()` determines the commit-ish for new worktrees (fetch `origin/<default>` → cached ref → HEAD fallback). For container projects, runs git via `docker exec` so the worktree's internal `.git` pointers are container paths. |
 | `provisioning.py` | Idempotent merge of `hooks/agents.json` into `<worktree>/.claude/settings.local.json`. Versioned by package version so upgrades replace stale hook groups. |
 | `hooks/agents.json` | Package data: the hook *dispatch* table (`tui: fullscreen` + per-event invocation of `write-state.sh`). Shipped, not generated. |
 | `hooks/write-state.sh` | Package data: the actual shell body the hooks invoke. Provisioned per worktree at `<worktree>/.local/.tmux-agents/write-state.sh`. Single source for the phase-JSON write + the registry `add-`/`del-` marker subcommands (extracting ids/signals from the hook payload via constrained sed). All counting/expiry/cron-parsing is host-side in `registry.py`. |
-| `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill`. No tmux/project knowledge. |
+| `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill` / `agent-rebuild`. No tmux/project knowledge. |
 | `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ N K R), and `attach_overview_pane` (`@role=overview`). The TUI auto-tracks the active window unless the user moved the cursor. |
 | `ssh_forward.py` | Probes + pump spawn for SSH agent forwarding. Spawns the pump as `python -m tmux_agents._ssh_pump_script`; the pump delivers the relay into the container as plain files (no inlining). |
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
@@ -253,6 +254,7 @@ shell-outs to the dedicated module rather than inline.
 | `startup.py` | Shared spawn/restore primitives used by both `agent-new` and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `_respawn_with_retry` (fork-safe respawn with backoff), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec). |
 | `progress.py` | Per-stage progress display. `Reporter` writes to a single output stream; `MultiReporter` fans out to N reporters for events shared across restore's project groups. Symbols: `▸` info / `✓` success / `!` warning (non-fatal) / `✗` fatal failure. Both `agent-new --provision` and `agent-restore` write each window's progress to `<state_dir>/spawn-<window_id>.log` (`paths.spawn_log`); the placeholder pane runs `tail -F <log>` and is replaced by `respawn-pane` when the worker finishes. |
 | `commands/restore.py` | The `agent-restore` worker. Snapshot reading + validation, project grouping, placeholder pre-creation, container ensure-up + per-entry respawn, failure logging + error display. Imports shared primitives from `startup.py`. |
+| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when any agent is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump, then re-exec each pane via `exec_cmd.build` (`claude --resume <id>`). Per-pane failures isolated; container-rebuild failure marks every pane `X`. |
 | `commands/*.py` | Thin CLI orchestrators (one per `[project.scripts]` entry). Logic lives in the modules above. |
 
 ### How `_ssh_*.py` reach the container
@@ -274,6 +276,7 @@ delivered-file import path under `python -E -S`.
 | `agents` | `commands/launcher.py` | Probe live session / snapshot, prompt user on stale snapshot, orchestrate restore handoff (`agent-restore --background`) before `execvp` into `tmux attach`. Falls through to plain `new-session -A` when no snapshot exists. Primary entry point. |
 | `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`), show error pane on fatal failure (`X`). |
 | `agent-kill [<window>] [--prune-worktree] [--force]` | `commands/kill.py` | fzf picker by default; can target by `--window-id`. Optional `git worktree remove` (interactive force-retry on dirty). |
+| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space B`. |
 | `agent-state` | `commands/state_tick.py` | Single tick of the host poll. Wired into `status-right` so tmux runs it every status interval. |
 | `agent-overview` | `commands/overview.py` | Curses TUI for the split-layout bottom pane. The status-line summary is emitted inline by `agent-state` — `render_summary` is called as a function, not via this CLI. |
 | `agent-rename --window-id <id> [--from-hook] <name>` | `commands/rename.py` | Replace the `:branch` half of `<repo>:<branch>`. Explicit (non-hook) renames set the `@pinned` window option; `agent-new` and `agent-restore` also set it when a branch is supplied at creation. `--from-hook` is the `pane-title-changed` mode that silently no-ops on ctrl/`@pinned`/unknown windows or empty names — so the hook keeps tracking Claude's titles on unpinned windows but never overwrites a branch label. |

@@ -196,7 +196,7 @@ even if your template references the env var.
 - Unified log: `$TMUX_AGENTS_STATE_DIR/tmux-agents.log` (default `/tmp/tmux-agents/tmux-agents.log`); pump entries are tagged with the container name in the `[component]` field.
 - Live pump processes: `ps -ef | grep tmux-agents-ssh-pump`.
 - Inside the container: `ls -la /tmp/tmux-agents-ssh.sock` to confirm the relay bound.
-- Container restart breaks the channel; recreate the agent (`Ctrl-Space K` then `Ctrl-Space N`).
+- Container restart breaks the channel; `Ctrl-Space B` (rebuild) recreates the container and brings the agents back, or recreate a single agent with `Ctrl-Space K` then `Ctrl-Space N`.
 
 ## Daily use
 
@@ -213,6 +213,7 @@ Cheat sheet:
 |---------------------|--------------------------------------------------|
 | `Ctrl-Space N`      | New agent — prompts for `<project> [branch]`     |
 | `Ctrl-Space R`      | Restore dead agent panes (revives every window whose Claude pane died) |
+| `Ctrl-Space B`      | Rebuild a project's container and resume its agents (warns first if any are busy) |
 | `Ctrl-Space E`      | Rename current window's branch part              |
 | `Ctrl-Space L`      | Toggle layout: split (vertical) ↔ compact (horizontal) |
 | `Ctrl-Space V`      | Open the current agent's worktree in VS Code     |
