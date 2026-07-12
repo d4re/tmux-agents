@@ -120,6 +120,58 @@ def test_ensure_up_label_still_missing_after_up_raises(monkeypatch):
         )
 
 
+def test_rebuild_devcontainer_appends_remove_flag(monkeypatch):
+    # call 0: the up command (shell); call 1: docker ps resolving the new name.
+    calls = _stub_run(monkeypatch, [(0, ""), (0, "brave_benz\n")])
+    name = container.rebuild(
+        _proj(devcontainer=True, repo="/Users/me/dev/webapp"),
+        up_cmd="cd /r && devcontainer up --workspace-folder .",
+    )
+    assert name == "brave_benz"
+    assert calls[0] == (
+        "cd /r && devcontainer up --workspace-folder . --remove-existing-container",
+        True,
+    )
+
+
+def test_rebuild_devcontainer_no_cache_appends_build_flag(monkeypatch):
+    calls = _stub_run(monkeypatch, [(0, ""), (0, "brave_benz\n")])
+    container.rebuild(_proj(devcontainer=True), up_cmd="devcontainer up", no_cache=True)
+    assert calls[0][0] == "devcontainer up --remove-existing-container --build-no-cache"
+
+
+def test_rebuild_named_container_removes_then_ups(monkeypatch):
+    # 1: current_name is_running check (running) → "true"
+    # 2: docker rm -f
+    # 3: up_cmd
+    # 4: current_name after up → "true"
+    calls = _stub_run(monkeypatch, [(0, "true\n"), (0, ""), (0, ""), (0, "true\n")])
+    name = container.rebuild(
+        _proj(container="api-devcontainer"), up_cmd="compose up -d"
+    )
+    assert name == "api-devcontainer"
+    assert calls[1][0] == ["docker", "rm", "-f", "api-devcontainer"]
+    assert calls[2] == ("compose up -d", True)
+
+
+def test_rebuild_no_up_cmd_raises(monkeypatch):
+    _stub_run(monkeypatch, [])
+    with pytest.raises(container.ContainerError, match="no up_cmd"):
+        container.rebuild(_proj(devcontainer=True), up_cmd=None)
+
+
+def test_rebuild_up_failure_raises(monkeypatch):
+    _stub_run(monkeypatch, [(1, "build error")])
+    with pytest.raises(container.ContainerError, match="rebuild failed"):
+        container.rebuild(_proj(devcontainer=True), up_cmd="devcontainer up")
+
+
+def test_rebuild_nothing_up_after_raises(monkeypatch):
+    _stub_run(monkeypatch, [(0, "ok"), (0, "")])  # up ok, then no container resolved
+    with pytest.raises(container.ContainerError, match="no container"):
+        container.rebuild(_proj(devcontainer=True), up_cmd="devcontainer up")
+
+
 def _proj(*, container=None, devcontainer=False, repo="/Users/me/dev/webapp"):
     return Project(
         name="webapp",

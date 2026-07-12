@@ -42,6 +42,10 @@ class Project:
     user: str | None = None
     forward_ssh_agent: bool = True
     base_branch: str | None = None
+    # True iff `up_cmd` came from projects.toml rather than the auto-default.
+    # `agent-rebuild` uses this to tell a real recipe from the devcontainer
+    # default that container projects otherwise inherit.
+    up_cmd_explicit: bool = False
 
     @property
     def is_container(self) -> bool:
@@ -120,6 +124,7 @@ def load(path: Path) -> dict[str, Project]:
         if exec_cmd is None:
             exec_cmd = _default_exec_cmd(is_container, forward_ssh_agent, user)
         up_cmd = entry.get("up_cmd")
+        up_cmd_explicit = up_cmd is not None
         if up_cmd is None and is_container:
             up_cmd = _CONTAINER_DEFAULT_UP_CMD
         projects[name] = Project(
@@ -133,6 +138,7 @@ def load(path: Path) -> dict[str, Project]:
             user=user,
             forward_ssh_agent=forward_ssh_agent,
             base_branch=entry.get("base_branch"),
+            up_cmd_explicit=up_cmd_explicit,
         )
     return projects
 
