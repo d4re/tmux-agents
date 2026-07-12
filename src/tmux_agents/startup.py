@@ -24,9 +24,15 @@ _FORK_RETRY_BACKOFF_S = 0.25
 
 
 def placeholder_command(window_id: str) -> str:
-    """`tail -F` retries on missing files, so the placeholder pane survives
-    the race where the worker hasn't yet created the log file."""
-    return f"tail -F {paths.spawn_log(window_id)}"
+    """Pre-create the log so tail never prints its "cannot open …: No such
+    file or directory" / "has appeared" noise into the pane — the worker that
+    fills the log in runs detached and may open it well after the pane is up.
+    `tail -F` (not `-f`) still matters: it survives the worker re-creating
+    the file."""
+    log = paths.spawn_log(window_id)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.touch()
+    return f"tail -F {log}"
 
 
 def _respawn_with_retry(pane_id: str, command: str) -> None:
