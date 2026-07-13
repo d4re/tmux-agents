@@ -203,6 +203,14 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    `base_branch` field in `projects.toml` overrides auto-detection.
    Offline runs degrade to the cached `origin/<base>` with a warning.
    All git invocations run via `docker exec` for container projects.
+   The two paths that hand an agent a checkout **without** creating a
+   fresh worktree — no-branch mode (runs Claude in `<repo>` as-is) and
+   reuse of an existing `.worktrees/<branch>` — instead run
+   `worktree.check_freshness`: a best-effort `git fetch origin <default>`
+   + `git rev-list --count HEAD..origin/<default>` that emits a stage
+   **warning** (holding the pane for Enter) when the checkout is behind,
+   so a stale base is surfaced rather than silently inherited. It never
+   modifies the working tree and degrades to an info line offline.
    **After resolve**, the mapping is rewritten with the real
    `host_worktree` and `phase_hint=None` (the worktree state file now
    takes over).
@@ -275,7 +283,7 @@ delivered-file import path under `python -E -S`.
 | Command | Owner | Purpose |
 |---|---|---|
 | `agents` | `commands/launcher.py` | Probe live session / snapshot, prompt user on stale snapshot, orchestrate restore handoff (`agent-restore --background`) before `execvp` into `tmux attach`. Falls through to plain `new-session -A` when no snapshot exists. Primary entry point. |
-| `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`), show error pane on fatal failure (`X`). |
+| `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve (or a `check_freshness` base-staleness check in no-branch mode) + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`, e.g. a checkout behind `origin/<default>`), show error pane on fatal failure (`X`). |
 | `agent-kill [<window>] [--prune-worktree] [--force]` | `commands/kill.py` | fzf picker by default; can target by `--window-id`. Optional `git worktree remove` (interactive force-retry on dirty). |
 | `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space B`. |
 | `agent-state` | `commands/state_tick.py` | Single tick of the host poll. Wired into `status-right` so tmux runs it every status interval. |

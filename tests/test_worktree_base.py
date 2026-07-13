@@ -246,6 +246,114 @@ def test_resolve_base_auto_init_default_branch_local(tmp_path, monkeypatch):
     assert warnings == []
 
 
+# ===== check_freshness — staleness warning for as-is checkouts =====
+
+
+def test_check_freshness_behind_warns(tmp_path, monkeypatch):
+    _route(
+        monkeypatch,
+        {
+            "symbolic-ref": (0, "refs/remotes/origin/main\n", ""),
+            "fetch": (0, "", ""),
+            "rev-list": (0, "3\n", ""),
+        },
+    )
+    st = MagicMock()
+    worktree.check_freshness(
+        tmp_path,
+        base_override=None,
+        container=None,
+        container_workdir=None,
+        container_user="vscode",
+        reporter_stage=st,
+    )
+    st.warn.assert_called_once()
+    msg = st.warn.call_args.args[0]
+    assert "3" in msg and "behind" in msg and "origin/main" in msg
+
+
+def test_check_freshness_up_to_date_no_warn(tmp_path, monkeypatch):
+    _route(
+        monkeypatch,
+        {
+            "symbolic-ref": (0, "refs/remotes/origin/main\n", ""),
+            "fetch": (0, "", ""),
+            "rev-list": (0, "0\n", ""),
+        },
+    )
+    st = MagicMock()
+    worktree.check_freshness(
+        tmp_path,
+        base_override=None,
+        container=None,
+        container_workdir=None,
+        container_user="vscode",
+        reporter_stage=st,
+    )
+    st.warn.assert_not_called()
+    st.info.assert_called()  # "up to date with origin/main"
+
+
+def test_check_freshness_offline_degrades_to_info(tmp_path, monkeypatch):
+    _route(
+        monkeypatch,
+        {
+            "symbolic-ref": (0, "refs/remotes/origin/main\n", ""),
+            "fetch": (1, "", "fatal: Could not resolve host: github.com"),
+        },
+    )
+    st = MagicMock()
+    worktree.check_freshness(
+        tmp_path,
+        base_override=None,
+        container=None,
+        container_workdir=None,
+        container_user="vscode",
+        reporter_stage=st,
+    )
+    st.warn.assert_not_called()
+    st.info.assert_called()
+
+
+def test_check_freshness_no_origin_base_skips(tmp_path, monkeypatch):
+    _route(monkeypatch, {})  # symbolic-ref fails, no base_override
+    st = MagicMock()
+    worktree.check_freshness(
+        tmp_path,
+        base_override=None,
+        container=None,
+        container_workdir=None,
+        container_user="vscode",
+        reporter_stage=st,
+    )
+    st.warn.assert_not_called()
+    st.info.assert_called_once()
+
+
+def test_check_freshness_container_uses_docker_exec(tmp_path, monkeypatch):
+    calls = _route(
+        monkeypatch,
+        {
+            "remote": (0, "git@github.com:foo/bar.git\n", ""),
+            "fetch": (0, "", ""),
+            "rev-list": (0, "2\n", ""),
+        },
+    )
+    st = MagicMock()
+    worktree.check_freshness(
+        tmp_path,
+        base_override="develop",
+        container="api-devcontainer",
+        container_workdir="/work/.worktrees/feat/x",
+        container_user="vscode",
+        reporter_stage=st,
+    )
+    st.warn.assert_called_once()
+    for cmd in calls:
+        assert cmd[:2] == ["docker", "exec"]
+        assert "api-devcontainer" in cmd
+
+
 # ----- 10. Container project: every git invocation goes through `docker exec` -----
 def test_resolve_base_container_uses_docker_exec(tmp_path, monkeypatch):
     calls = _route(

@@ -108,6 +108,7 @@ def _provision_env(
         ssh_forward, "maybe_spawn_pump", lambda c, u: ssh_forward.PumpResult("ready")
     )
     monkeypatch.setattr(worktree, "resolve", lambda *a, **k: repo)
+    monkeypatch.setattr(worktree, "check_freshness", lambda *a, **k: None)
 
     def fake_provision(*a, **k):
         if warn:
@@ -195,6 +196,25 @@ def test_new_container_no_branch(monkeypatch, tmp_config_dir, tmp_path):
     _, cmd = cap.respawns[0]
     assert "api-devcontainer" in cmd
     assert "claude" in cmd
+
+
+def test_new_no_branch_checks_base_freshness(monkeypatch, tmp_config_dir, tmp_path):
+    """No-branch mode runs Claude in the repo as-is, so _provision must run a
+    freshness check against origin/<default> to warn on a stale checkout."""
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        worktree, "check_freshness", lambda *a, **k: calls.append((a, k))
+    )
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "api"]
+    )
+    assert rc == 0
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert kwargs["base_override"] is None  # api has no base_branch override
+    assert kwargs["container"] == "api-devcontainer"
+    assert kwargs["container_workdir"] == "/work"
 
 
 def test_new_container_with_branch_creates_worktree(

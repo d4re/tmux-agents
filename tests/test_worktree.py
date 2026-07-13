@@ -333,6 +333,7 @@ def test_resolve_offline_fetch_emits_warn_through_stage(monkeypatch, tmp_path):
 def test_resolve_skips_when_worktree_exists(monkeypatch, tmp_path):
     repo = tmp_path / "r"
     (repo / ".worktrees" / "feat/x").mkdir(parents=True)
+    monkeypatch.setattr(worktree, "check_freshness", lambda *a, **k: None)
 
     out = io.StringIO()
     r = Reporter(out=out, color=False, clock=lambda: 0.0)
@@ -343,3 +344,31 @@ def test_resolve_skips_when_worktree_exists(monkeypatch, tmp_path):
     output = out.getvalue()
     assert "▸ worktree — reusing .worktrees/feat/x" in output
     assert "✓ worktree" not in output  # skip suppresses ✓
+
+
+def test_resolve_reuse_checks_freshness(monkeypatch, tmp_path):
+    """Reusing an existing worktree must still run a staleness check against
+    origin/<default> — pointed at the worktree checkout, not the repo root."""
+    repo = tmp_path / "r"
+    (repo / ".worktrees" / "feat/x").mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(
+        worktree, "check_freshness", lambda *a, **k: calls.append((a, k))
+    )
+
+    out = io.StringIO()
+    r = Reporter(out=out, color=False, clock=lambda: 0.0)
+    with r.stage("worktree") as st:
+        worktree.resolve(
+            repo,
+            "feat/x",
+            container="api-devcontainer",
+            container_workdir="/work",
+            reporter_stage=st,
+        )
+
+    assert len(calls) == 1
+    (target,), kwargs = calls[0]
+    assert target == repo / ".worktrees" / "feat/x"
+    # Container cwd points at the worktree, not the repo root.
+    assert kwargs["container_workdir"] == "/work/.worktrees/feat/x"
