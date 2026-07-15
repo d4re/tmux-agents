@@ -225,6 +225,79 @@ def _resolve_base(
         raise WorktreeError(f"base branch {name!r} does not exist locally")
 
 
+def check_freshness(
+    repo: Path,
+    *,
+    base_override: str | None,
+    container: str | None,
+    container_workdir: str | None,
+    container_user: str,
+    reporter_stage,
+) -> None:
+    """Best-effort staleness check for a checkout handed to an agent as-is
+    (no-branch mode, or a reused existing worktree — the two paths that skip
+    `_resolve_base`'s fetch-and-branch-from-origin logic).
+
+    Fetches origin and, if the current HEAD is behind origin/<base>, calls
+    `reporter_stage.warn` (which holds the pane so the user can rebase before
+    Claude launches). Never raises: staleness is advisory, so detection or
+    network failures degrade to an info line rather than a hard failure.
+
+    Base detection is deliberately a minimal subset of `_resolve_base`'s
+    (override → origin/HEAD) so that function's tested behavior stays put."""
+
+    def run(*args):
+        return _git_run(
+            list(args),
+            repo=repo,
+            container=container,
+            container_workdir=container_workdir,
+            container_user=container_user,
+        )
+
+    def head_name():
+        r = run("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+        if r.returncode == 0:
+            return r.stdout.strip().removeprefix("refs/remotes/origin/")
+        return None
+
+    name: str | None = None
+    if base_override:
+        if run("remote", "get-url", "origin").returncode == 0:
+            name = base_override
+    else:
+        name = head_name()
+        if name is None and run("remote", "get-url", "origin").returncode == 0:
+            # origin/HEAD unset (e.g. cloned before the default branch existed);
+            # populate it once, mirroring _resolve_base's fallback.
+            if run("remote", "set-head", "origin", "-a").returncode == 0:
+                name = head_name()
+    if not name:
+        reporter_stage.info("no origin base to compare")
+        return
+
+    f = run("fetch", "origin", name)
+    if f.returncode != 0:
+        if _looks_like_offline_fetch_failure(f.stderr):
+            reporter_stage.info("offline; skipped freshness check")
+        else:
+            reporter_stage.info(f"freshness check skipped: {f.stderr.strip()}")
+        return
+
+    rc = run("rev-list", "--count", f"HEAD..origin/{name}")
+    behind = rc.stdout.strip()
+    if rc.returncode != 0 or not behind.isdigit():
+        reporter_stage.info(f"could not compare against origin/{name}")
+        return
+    if int(behind) > 0:
+        reporter_stage.warn(
+            f"checkout is {behind} commit(s) behind origin/{name}; "
+            "run 'git pull --ff-only' or rebase before working"
+        )
+    else:
+        reporter_stage.info(f"up to date with origin/{name}")
+
+
 def resolve(
     repo: Path,
     branch: str | None,
@@ -238,12 +311,27 @@ def resolve(
     if branch is None:
         return repo
     target = repo / ".worktrees" / branch
+    user = container_user or "vscode"
     if target.exists():
         if reporter_stage is not None:
+            # `skip` suppresses the stage's ✓ but not a later `warn`, which is
+            # still emitted from Stage.__exit__ — so a stale reused worktree
+            # surfaces as a warning even though the reuse itself is a skip.
             reporter_stage.skip(f"reusing .worktrees/{branch}")
+            check_freshness(
+                target,
+                base_override=base_override,
+                container=container,
+                container_workdir=(
+                    f"{container_workdir}/.worktrees/{branch}"
+                    if container and container_workdir
+                    else None
+                ),
+                container_user=user,
+                reporter_stage=reporter_stage,
+            )
         return target
 
-    user = container_user or "vscode"
     commit_ish, warnings = _resolve_base(
         repo,
         base_override,

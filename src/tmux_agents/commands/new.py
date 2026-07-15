@@ -205,6 +205,15 @@ def _provision(
                     return _fatal(f"worktree resolve failed: {we}")
             else:
                 wt_path = proj.repo
+                with reporter.stage("base freshness") as st:
+                    worktree.check_freshness(
+                        proj.repo,
+                        base_override=proj.base_branch,
+                        container=container_name,
+                        container_workdir=container_workdir,
+                        container_user=proj.user or "vscode",
+                        reporter_stage=st,
+                    )
 
             # Worktree confirmed: rewrite the mapping with the real path, clear the hint.
             m = windows_mod.read_mapping(window_id)
