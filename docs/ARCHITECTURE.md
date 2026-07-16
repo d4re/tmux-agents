@@ -193,7 +193,15 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    `ssh_forward.maybe_spawn_pump` probes host `$SSH_AUTH_SOCK` and
    `python3` in the container; if both present, launches a detached host
    pump that `docker exec`s the relay as `-u {user}`.
-3. **Worktree.** `worktree.resolve` returns `<repo>` if no branch, else
+3. **gh auth** *(container projects with `share_gh_auth`, default).*
+   `gh_auth.maybe_sync_gh_auth` reads the host's gh token
+   (`gh auth token`, keyring-backed) and pipes it via stdin into
+   `gh auth login --with-token` in the container. Non-fatal: any missing
+   prerequisite (gh on host, host login, gh in container) or sync failure
+   emits a stage warning and the agent starts without it. The same stage
+   runs in `agent-restore` and `agent-rebuild`, so a rebuilt container
+   (which loses its `~/.config/gh/hosts.yml`) is re-authed automatically.
+4. **Worktree.** `worktree.resolve` returns `<repo>` if no branch, else
    `<repo>/.worktrees/<branch>`. If the worktree dir doesn't exist,
    `git worktree add -B <branch> <target> <commit-ish>` is run. The
    commit-ish comes from `_resolve_base()`: by default it fetches
@@ -214,10 +222,10 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    **After resolve**, the mapping is rewritten with the real
    `host_worktree` and `phase_hint=None` (the worktree state file now
    takes over).
-4. **Provision hooks.** `provisioning.provision_settings` merges
+5. **Provision hooks.** `provisioning.provision_settings` merges
    `hooks/agents.json` into `<worktree>/.claude/settings.local.json`
    (idempotent; non-fatal on failure — emits a warning to the log).
-5. **Respawn.** Once the log file is closed:
+6. **Respawn.** Once the log file is closed:
    - No warnings → `startup._respawn_with_retry` swaps the pane into
      the real `exec_cmd` (Claude).
    - Non-fatal warning → `startup.hold_pane_then_exec` shows the log
@@ -247,7 +255,7 @@ shell-outs to the dedicated module rather than inline.
 | `theme.py` | Color palette. Dark + light defaults, optional `theme.toml` overrides, derived ANSI/tmux/contrast variants for active-row inversion. Cached per-process. |
 | `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, split, kill, option setters. |
 | `windows.py` | The `<config_dir>/windows/<window_id>.json` mapping that lets the host tick translate a tmux window into the worktree path + pane id its hooks write under. |
-| `config.py` | `projects.toml` loader. Resolves `container` vs `devcontainer = true`, fills in defaults (`up_cmd`, `exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
+| `config.py` | `projects.toml` loader. Resolves `container` vs `devcontainer = true`, fills in defaults (`up_cmd`, `exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`, `share_gh_auth`). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
 | `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), `ensure_up` (runs `up_cmd` once if down), and `rebuild` (force-recreate: devcontainer projects append `--remove-existing-container` [+ `--build-no-cache`] to `up_cmd`; named-container projects `docker rm -f` then re-run `up_cmd`). |
 | `exec_cmd.py` | Shared builder `build(proj, *, branch, claude_session_id, container_name, label)` for the pane launch command, injecting ` --resume <id>` via the `{resume_args}` placeholder. Used by both `agent-restore` and `agent-rebuild` so resume semantics stay identical. |
 | `worktree.py` | `git worktree add/remove`. `_resolve_base()` determines the commit-ish for new worktrees (fetch `origin/<default>` → cached ref → HEAD fallback). For container projects, runs git via `docker exec` so the worktree's internal `.git` pointers are container paths. |
@@ -257,13 +265,14 @@ shell-outs to the dedicated module rather than inline.
 | `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill` / `agent-rebuild`. No tmux/project knowledge. |
 | `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ N K R), and `attach_overview_pane` (`@role=overview`). The TUI auto-tracks the active window unless the user moved the cursor. |
 | `ssh_forward.py` | Probes + pump spawn for SSH agent forwarding. Spawns the pump as `python -m tmux_agents._ssh_pump_script`; the pump delivers the relay into the container as plain files (no inlining). |
+| `gh_auth.py` | One-shot host→container gh token sync (`maybe_sync_gh_auth`). Reads the host token via `gh auth token` (keyring-backed), pipes it via stdin into `gh auth login --with-token` in the container — never on argv or host disk. Always overwrites; every failure is a non-fatal `SyncResult` mapped onto a progress stage. Gated by the per-project `share_gh_auth` flag (default on). |
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
 | `_ssh_pump_script.py` | Host-side pump. For each in-container SSH op, opens a fresh connection to the host's `$SSH_AUTH_SOCK` and splices it. |
 | `_ssh_relay_script.py` | In-container relay. Bind-or-exit dedup at `/tmp/tmux-agents-ssh.sock`, accepts client connections, splices each through stdin/stdout to the pump. |
 | `startup.py` | Shared spawn/restore primitives used by both `agent-new` and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `_respawn_with_retry` (fork-safe respawn with backoff), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec). |
 | `progress.py` | Per-stage progress display. `Reporter` writes to a single output stream; `MultiReporter` fans out to N reporters for events shared across restore's project groups. Symbols: `▸` info / `✓` success / `!` warning (non-fatal) / `✗` fatal failure. Both `agent-new --provision` and `agent-restore` write each window's progress to `<state_dir>/spawn-<window_id>.log` (`paths.spawn_log`); the placeholder pane runs `tail -F <log>` and is replaced by `respawn-pane` when the worker finishes. |
 | `commands/restore.py` | The `agent-restore` worker. Snapshot reading + validation, project grouping, placeholder pre-creation, container ensure-up + per-entry respawn, failure logging + error display. Imports shared primitives from `startup.py`. |
-| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when any agent is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): fork/setsid/detach-stdio (same as `agent-new --provision` — otherwise tmux paints the worker's output, e.g. `devcontainer up` JSON, over the active pane in view mode), then show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump, then re-exec each pane via `exec_cmd.build` (`claude --resume <id>`). Per-pane failures isolated; container-rebuild failure marks every pane `X`. |
+| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when any agent is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): fork/setsid/detach-stdio (same as `agent-new --provision` — otherwise tmux paints the worker's output, e.g. `devcontainer up` JSON, over the active pane in view mode), then show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump + gh auth sync, then re-exec each pane via `exec_cmd.build` (`claude --resume <id>`). Per-pane failures isolated; container-rebuild failure marks every pane `X`. |
 | `commands/*.py` | Thin CLI orchestrators (one per `[project.scripts]` entry). Logic lives in the modules above. |
 
 ### How `_ssh_*.py` reach the container
@@ -283,14 +292,14 @@ delivered-file import path under `python -E -S`.
 | Command | Owner | Purpose |
 |---|---|---|
 | `agents` | `commands/launcher.py` | Probe live session / snapshot, prompt user on stale snapshot, orchestrate restore handoff (`agent-restore --background`) before `execvp` into `tmux attach`. Falls through to plain `new-session -A` when no snapshot exists. Primary entry point. |
-| `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve (or a `check_freshness` base-staleness check in no-branch mode) + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`, e.g. a checkout behind `origin/<default>`), show error pane on fatal failure (`X`). |
+| `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + gh auth sync + worktree resolve (or a `check_freshness` base-staleness check in no-branch mode) + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`, e.g. a checkout behind `origin/<default>`), show error pane on fatal failure (`X`). |
 | `agent-kill [<window>] [--prune-worktree] [--force]` | `commands/kill.py` | fzf picker by default; can target by `--window-id`. Optional `git worktree remove` (interactive force-retry on dirty). |
-| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space B`. |
+| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump + gh auth sync, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space B`. |
 | `agent-state` | `commands/state_tick.py` | Single tick of the host poll. Wired into `status-right` so tmux runs it every status interval. |
 | `agent-overview` | `commands/overview.py` | Curses TUI for the split-layout bottom pane. The status-line summary is emitted inline by `agent-state` — `render_summary` is called as a function, not via this CLI. |
 | `agent-rename --window-id <id> [--from-hook] <name>` | `commands/rename.py` | Replace the `:branch` half of `<repo>:<branch>`. Explicit (non-hook) renames set the `@pinned` window option; `agent-new` and `agent-restore` also set it when a branch is supplied at creation. `--from-hook` is the `pane-title-changed` mode that silently no-ops on ctrl/`@pinned`/unknown windows or empty names — so the hook keeps tracking Claude's titles on unpinned windows but never overwrites a branch label. |
 | `agent-layout` | `commands/layout.py` | Toggle persistent layout file (`<state_dir>/layout`) between `split` and `compact`; rebuilds existing windows accordingly. |
-| `agent-restore [--background]` | `commands/restore.py` | Read snapshot, pre-create placeholder windows (with overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump per container project, `respawn-pane` each pane with `claude --resume <id>`. Triggered automatically by the launcher; runnable manually for partial-failure retry or dead-pane recovery, bound to `Ctrl-Space R`. |
+| `agent-restore [--background]` | `commands/restore.py` | Read snapshot, pre-create placeholder windows (with overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump + gh auth sync per container project, `respawn-pane` each pane with `claude --resume <id>`. Triggered automatically by the launcher; runnable manually for partial-failure retry or dead-pane recovery, bound to `Ctrl-Space R`. |
 | `agent-vscode --window-id <id>` | `commands/vscode.py` | Open the current agent's worktree in VS Code. Host projects → `code <host_worktree>`. Container / devcontainer projects → `code --folder-uri vscode-remote://attached-container+<hex>/<container_workdir>`, reattaching to the running container resolved by `container.current_name` (no rebuild, no second container). Resolves the `code` binary via `shutil.which` first, then falls back to a top-level `code_path` in `projects.toml` (default: `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`). Bound to `Ctrl-Space V`. |
 | `agent-terminal --window-id <id>` | `commands/terminal.py` | Pop up a shell in the active agent's context. Host projects → `os.chdir(host_worktree)` then `exec $SHELL -l` (fallback `/bin/bash`). Container / devcontainer projects → `os.execvp("docker", ["exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE", "-u", user, "-w", workdir, name, "bash", "-il"])`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space T` via `display-popup -E`. |
 
@@ -429,6 +438,25 @@ on a healthy container is idempotent (no zombie pile-up).
 Opt out: `forward_ssh_agent = false` per project. Default `exec_cmd`
 templates set `SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` only when
 forwarding is on.
+
+### GitHub CLI auth sharing
+
+`gh_auth.maybe_sync_gh_auth(container, user)` runs as a stage right after
+the SSH pump wherever a container comes up (`agent-new`, `agent-restore`,
+`agent-rebuild`). One-shot, no daemon: the host's `gh auth token` (keyring-
+backed — a rebuilt container can't carry its own `hosts.yml` login, and the
+host token isn't in a mountable file) is piped via stdin into
+`docker exec -i -u {user} … gh auth login --with-token --hostname github.com`.
+The token never appears on argv, in tmux command strings, or on host disk;
+in the container it lands where a manual `gh auth login` would put it. The
+sync always overwrites (a probe can't detect a revoked token; re-login is
+~200ms) and every subprocess call is time-boxed so a hung docker can't
+stall a spawn. All failure modes (`gh` missing on host, host not logged in,
+`gh` missing in container, login rejected) map to a `SyncResult` rendered
+as a non-fatal stage warning — in `agent-new` that trips the hold-on-warning
+pane so it's visible; the agent always starts regardless.
+
+Opt out: `share_gh_auth = false` per project.
 
 ### Theming
 

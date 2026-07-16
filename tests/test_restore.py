@@ -506,6 +506,115 @@ def test_execute_skips_ssh_pump_when_forward_ssh_agent_false(
     assert pump_calls == []
 
 
+def test_execute_syncs_gh_auth_once_per_container_project(
+    monkeypatch,
+    tmp_config_dir,
+    tmp_state_dir,
+    tmp_path,
+    projects_file,
+):
+    from tmux_agents import tmux, container, ssh_forward, gh_auth
+    from tmux_agents.gh_auth import SyncResult
+    from tmux_agents.ssh_forward import PumpResult
+    from tmux_agents.commands import restore
+
+    wt_api = tmp_path / "api"
+    _write_snapshot("@1", project="api", branch=None, host_worktree=wt_api)
+    _write_snapshot(
+        "@2",
+        project="api",
+        branch="feat",
+        host_worktree=tmp_path / "api" / ".worktrees" / "feat",
+        window_index=2,
+    )
+    _write_snapshot(
+        "@3",
+        project="scripts",
+        branch=None,
+        host_worktree=tmp_path / "scripts",
+        window_index=3,
+    )
+
+    monkeypatch.setattr(tmux, "session_exists", lambda s: True)
+    monkeypatch.setattr(tmux, "new_window", lambda s, *, name, command: f"@new-{name}")
+    monkeypatch.setattr(tmux, "active_pane_id", lambda wid: f"%{wid[5:]}")
+    monkeypatch.setattr(tmux, "respawn_pane", lambda pane_id, *, command: None)
+    from tmux_agents import provisioning
+
+    monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **kw: True)
+    monkeypatch.setattr(container, "current_name", lambda proj: None)
+    monkeypatch.setattr(
+        container, "ensure_up", lambda proj, *, up_cmd: f"{proj.name}-container"
+    )
+    monkeypatch.setattr(
+        ssh_forward, "maybe_spawn_pump", lambda c, u: PumpResult("ready")
+    )
+
+    sync_calls: list[tuple[str, str]] = []
+
+    def fake_sync(c, u):
+        sync_calls.append((c, u))
+        return SyncResult("synced")
+
+    monkeypatch.setattr(gh_auth, "maybe_sync_gh_auth", fake_sync)
+
+    projs = _load_test_projects(projects_file)
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+    # One sync for api (despite two entries); none for scripts (host-only).
+    assert sync_calls == [("api-container", "vscode")]
+
+
+def test_execute_skips_gh_auth_when_share_gh_auth_false(
+    monkeypatch,
+    tmp_config_dir,
+    tmp_state_dir,
+    tmp_path,
+):
+    from tmux_agents import tmux, container, ssh_forward, gh_auth, config
+    from tmux_agents.ssh_forward import PumpResult
+    from tmux_agents.commands import restore
+
+    repo = tmp_path / "api"
+    repo.mkdir()
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[api]\nrepo = "{repo}"\ncontainer = "api-devcontainer"\n'
+        f'container_workdir = "/work"\nup_cmd = "echo up"\n'
+        f"share_gh_auth = false\n"
+    )
+    _write_snapshot(
+        "@1", project="api", branch=None, host_worktree=repo, window_index=1
+    )
+
+    monkeypatch.setattr(tmux, "session_exists", lambda s: True)
+    monkeypatch.setattr(tmux, "new_window", lambda s, *, name, command: "@new-1")
+    monkeypatch.setattr(tmux, "active_pane_id", lambda wid: "%99")
+    monkeypatch.setattr(tmux, "respawn_pane", lambda pane_id, *, command: None)
+    from tmux_agents import provisioning
+
+    monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        container, "ensure_up", lambda proj, *, up_cmd: "api-devcontainer"
+    )
+    monkeypatch.setattr(
+        ssh_forward, "maybe_spawn_pump", lambda c, u: PumpResult("ready")
+    )
+
+    sync_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gh_auth, "maybe_sync_gh_auth", lambda c, u: sync_calls.append((c, u))
+    )
+
+    projs = config.load(tmp_config_dir / "projects.toml")
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+    assert sync_calls == []
+
+
 def test_execute_failure_shows_error_in_pane_and_marks_state_errored(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file, caplog
 ):

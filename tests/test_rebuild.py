@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tmux_agents import phase, pickers, ssh_forward, startup, tmux, container
+from tmux_agents import gh_auth, phase, pickers, ssh_forward, startup, tmux, container
 from tmux_agents import windows as windows_mod
 from tmux_agents.commands import rebuild
 from tmux_agents.config import Project
@@ -18,6 +18,7 @@ def _proj(
     up_cmd_explicit=None,
     user=None,
     forward_ssh_agent=True,
+    share_gh_auth=True,
     repo="/Users/me/dev/webapp",
 ):
     # Mirror config.load: an up_cmd passed here is treated as explicit unless
@@ -34,6 +35,7 @@ def _proj(
         up_cmd_explicit=up_cmd_explicit,
         user=user,
         forward_ssh_agent=forward_ssh_agent,
+        share_gh_auth=share_gh_auth,
     )
 
 
@@ -184,7 +186,13 @@ def _stub_worker_io(monkeypatch):
     monkeypatch.setattr(
         ssh_forward, "maybe_spawn_pump", lambda c, u: ssh_forward.PumpResult("ready")
     )
-    return SimpleNamespace(respawns=respawns, states=states)
+    gh_syncs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gh_auth,
+        "maybe_sync_gh_auth",
+        lambda c, u: gh_syncs.append((c, u)) or gh_auth.SyncResult("synced"),
+    )
+    return SimpleNamespace(respawns=respawns, states=states, gh_syncs=gh_syncs)
 
 
 def test_worker_rebuilds_then_resumes_each_pane(monkeypatch, tmp_state_dir):
@@ -213,6 +221,24 @@ def test_worker_rebuilds_then_resumes_each_pane(monkeypatch, tmp_state_dir):
     assert ("%24", "claude") in final
     # Every pane ends in STARTING.
     assert io.states[-2:] == [("23", phase.STARTING), ("24", phase.STARTING)]
+
+
+def test_worker_syncs_gh_auth_after_rebuild(monkeypatch, tmp_state_dir):
+    io = _stub_worker_io(monkeypatch)
+    monkeypatch.setattr(container, "rebuild", lambda proj, *, up_cmd, no_cache: "cid")
+    proj = _proj(devcontainer=True, up_cmd="devcontainer up")
+    rc = rebuild._run_worker(proj, [_affected(pane_id="23")], no_cache=False)
+    assert rc == 0
+    assert io.gh_syncs == [("cid", "vscode")]
+
+
+def test_worker_skips_gh_auth_when_share_gh_auth_false(monkeypatch, tmp_state_dir):
+    io = _stub_worker_io(monkeypatch)
+    monkeypatch.setattr(container, "rebuild", lambda proj, *, up_cmd, no_cache: "cid")
+    proj = _proj(devcontainer=True, up_cmd="devcontainer up", share_gh_auth=False)
+    rc = rebuild._run_worker(proj, [_affected(pane_id="23")], no_cache=False)
+    assert rc == 0
+    assert io.gh_syncs == []
 
 
 def test_worker_container_failure_marks_panes_errored(monkeypatch, tmp_state_dir):

@@ -41,6 +41,7 @@ class Project:
     devcontainer: bool = False
     user: str | None = None
     forward_ssh_agent: bool = True
+    share_gh_auth: bool = True
     base_branch: str | None = None
     # True iff `up_cmd` came from projects.toml rather than the auto-default.
     # `agent-rebuild` uses this to tell a real recipe from the devcontainer
@@ -137,6 +138,7 @@ def load(path: Path) -> dict[str, Project]:
             devcontainer=devcontainer,
             user=user,
             forward_ssh_agent=forward_ssh_agent,
+            share_gh_auth=bool(entry.get("share_gh_auth", True)),
             base_branch=entry.get("base_branch"),
             up_cmd_explicit=up_cmd_explicit,
         )
