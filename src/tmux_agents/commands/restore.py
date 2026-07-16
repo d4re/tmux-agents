@@ -37,7 +37,7 @@ from tmux_agents import (
 
 logger = logging.getLogger(__name__)
 
-EntryKind = Literal["skip", "revive", "fresh"]
+EntryKind = Literal["skip", "revive", "fresh", "reactivate"]
 
 
 @dataclass(frozen=True)
@@ -52,18 +52,36 @@ class Entry:
     kind: EntryKind = "fresh"
 
 
+def _pane_phase(entry: Entry) -> str | None:
+    """Read the per-pane phase Claude hooks / restore write for this entry's
+    pane, or None if there's no state file yet."""
+    d = paths.read_json_or(
+        paths.worktree_state_file(entry.host_worktree, entry.pane_id), None
+    )
+    if not isinstance(d, dict):
+        return None
+    return d.get("phase")
+
+
 def classify_entry(entry: Entry, live_panes: dict[str, set[str]]) -> EntryKind:
     """Classify a snapshot entry against the current tmux pane map.
 
-    skip   — window alive AND the recorded pane id is still present.
-    revive — window alive but the recorded pane id is gone.
-    fresh  — window is not present at all.
+    skip       — window alive, recorded pane present, and the pane is a healthy
+                 agent (not an errored restore placeholder).
+    reactivate — window alive, recorded pane present, but its phase is
+                 `errored` (a failed restore left the placeholder pane alive
+                 showing an error). Retry re-runs the container + respawns
+                 Claude in the same pane.
+    revive     — window alive but the recorded pane id is gone.
+    fresh      — window is not present at all.
     """
     panes = live_panes.get(entry.window_id)
     if panes is None:
         return "fresh"
     # Stored pane_id is stripped (no '%'); tmux's pane_id includes it.
     if f"%{entry.pane_id}" in panes:
+        if _pane_phase(entry) == phase.ERRORED:
+            return "reactivate"
         return "skip"
     return "revive"
 
@@ -214,6 +232,22 @@ def _pre_create_revive(
     return Placeholder(e, e.window_id, new_full_pane_id)
 
 
+def _pre_create_reactivate(e: Entry) -> "Placeholder | None":
+    """Reuse the errored placeholder's existing window + pane in place.
+
+    A failed restore left this pane alive showing an error message and its
+    per-pane state at `errored`. Respawn it back into the tail-log placeholder
+    (so the retry's progress is visible), reset its state to `starting`, and
+    return a Placeholder pointing at the same pane so `execute_plan` can
+    respawn Claude into it once the container is up. No new window is created,
+    so retries never accumulate duplicate windows."""
+    full_pane_id = f"%{e.pane_id}"
+    startup._respawn_with_retry(full_pane_id, startup.placeholder_command(e.window_id))
+    startup._write_pane_state(e.host_worktree, e.pane_id, phase_value=phase.STARTING)
+    logger.info("%s: reactivating errored pane=%s", e.window_id, full_pane_id)
+    return Placeholder(e, e.window_id, full_pane_id)
+
+
 def pre_create_windows(
     plan: list[Entry], live_panes: dict[str, set[str]]
 ) -> dict[str, Placeholder]:
@@ -224,6 +258,11 @@ def pre_create_windows(
         try:
             if e.kind == "revive":
                 ph = _pre_create_revive(e, live_panes)
+                if ph is not None:
+                    placeholders[ph.new_window_id] = ph
+                continue
+            if e.kind == "reactivate":
+                ph = _pre_create_reactivate(e)
                 if ph is not None:
                     placeholders[ph.new_window_id] = ph
                 continue

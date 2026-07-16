@@ -487,10 +487,25 @@ surfaced by `tmux.TmuxError` (a `CalledProcessError` subclass whose
 code); non-fork failures re-raise immediately.
 
 A manual `agent-restore` rerun against a still-live session now
-classifies each snapshot entry as `skip` / `revive` / `fresh` via
-`classify_entry(entry, live_panes)`. `revive` is the new case: a
-window is alive but its agent pane is gone (only the overview pane
-survives). `pre_create_windows` splits a fresh agent pane above the
+classifies each snapshot entry as `skip` / `revive` / `fresh` /
+`reactivate` via `classify_entry(entry, live_panes)`. `revive` is a
+window alive but its agent pane is gone (only the overview pane
+survives). `reactivate` handles a **failed restore retry**: the previous
+run left the placeholder pane alive but at `phase=errored` (e.g. Docker
+was down, so `up_cmd` failed and the pane was replaced with the error
+heredoc). Because the launcher deletes `windows.previous/` at the end of
+every run — success or failure — a retry (`agent-restore` /
+`Ctrl-Space R`) reads the live `windows/` mappings, and `classify_entry`
+reads the pane's per-pane state file: an alive-but-`errored` pane is
+`reactivate` rather than `skip`. `_pre_create_reactivate` reuses that
+window+pane in place — respawns it back into the `tail -F` placeholder,
+resets its state to `starting`, and returns a `Placeholder` pointing at
+the same pane — so `execute_plan` re-runs the container bring-up and
+respawns Claude into it. No new window is created, so retries never
+accumulate duplicates, and the retry is idempotent while the underlying
+cause (Docker down) persists.
+
+`pre_create_windows` splits a fresh agent pane above the
 surviving overview at 75/25 (`tmux.split_window(target=surviving_pane_id,
 before=True, percent=75)`), rewrites the window mapping with the new
 pane id, and cleans the stale per-pane files (`state-<old>.json`,
@@ -508,8 +523,8 @@ to an already-agent-dead window can't add a second overview.
 
 This manual rerun is wired to a recovery shortcut: `Ctrl-Space R` (and
 `R` in the focused overview pane) run `agent-restore --background` via
-`run-shell -b`, which revives every dead-pane window in one pass and skips
-live ones. `--background` forks + `setsid`s and then redirects fd 0/1/2 to
+`run-shell -b`, which revives every dead-pane window and reactivates every
+errored placeholder in one pass, and skips healthy live ones. `--background` forks + `setsid`s and then redirects fd 0/1/2 to
 `/dev/null` (`startup._detach_stdio`); without that detach the backgrounded
 worker keeps `run-shell`'s capture pipe as stdout and tmux paints its output
 (e.g. `devcontainer up` JSON) over the active pane. The
