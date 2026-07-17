@@ -882,6 +882,50 @@ def test_classify_fresh_when_window_missing():
     assert restore.classify_entry(e, live_panes={}) == "fresh"
 
 
+def test_classify_reactivate_when_pane_alive_but_errored(tmp_path):
+    """A failed restore leaves the placeholder pane alive but with
+    phase=errored. A retry must reactivate it (re-run container + respawn
+    Claude in place), not skip it as if it were a healthy agent."""
+    from tmux_agents.commands import restore
+    from tmux_agents import startup, phase
+
+    wt = tmp_path / "scripts"
+    wt.mkdir()
+    startup._write_pane_state(wt, "42", phase_value=phase.ERRORED)
+    e = restore.Entry(
+        window_id="@3",
+        project="scripts",
+        branch=None,
+        host_worktree=wt,
+        pane_id="42",
+        claude_session_id=None,
+        window_index=1,
+        kind="fresh",
+    )
+    assert restore.classify_entry(e, live_panes={"@3": {"%42"}}) == "reactivate"
+
+
+def test_classify_skip_when_pane_alive_and_not_errored(tmp_path):
+    """A live, non-errored pane is a healthy agent — still skip."""
+    from tmux_agents.commands import restore
+    from tmux_agents import startup, phase
+
+    wt = tmp_path / "scripts"
+    wt.mkdir()
+    startup._write_pane_state(wt, "42", phase_value=phase.RUNNING)
+    e = restore.Entry(
+        window_id="@3",
+        project="scripts",
+        branch=None,
+        host_worktree=wt,
+        pane_id="42",
+        claude_session_id=None,
+        window_index=1,
+        kind="fresh",
+    )
+    assert restore.classify_entry(e, live_panes={"@3": {"%42"}}) == "skip"
+
+
 def test_classify_revive_when_all_panes_dead():
     """Window is in live_panes with an empty pane set — all panes dead.
     The classifier returns 'revive'; the no-survivor guard in
@@ -899,6 +943,105 @@ def test_classify_revive_when_all_panes_dead():
         kind="fresh",
     )
     assert restore.classify_entry(e, live_panes={"@3": set()}) == "revive"
+
+
+def test_pre_create_reactivate_reuses_existing_pane(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """Reactivate reuses the errored placeholder's window+pane in place: no
+    new window is created, the existing pane is respawned into the tail-log
+    placeholder, its state is reset to starting, and a Placeholder pointing at
+    the same pane is returned so execute_plan can respawn Claude into it."""
+    from tmux_agents.commands import restore
+    from tmux_agents import tmux, startup, phase
+
+    wt = tmp_path / "scripts"
+    wt.mkdir()
+    e = restore.Entry(
+        window_id="@5",
+        project="scripts",
+        branch=None,
+        host_worktree=wt,
+        pane_id="42",
+        claude_session_id="sid-1",
+        window_index=1,
+        kind="reactivate",
+    )
+
+    new_window_calls: list[int] = []
+    monkeypatch.setattr(
+        tmux,
+        "new_window",
+        lambda *a, **k: (new_window_calls.append(1), "@nope")[1],
+    )
+    respawns: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tmux, "respawn_pane", lambda pane, *, command: respawns.append((pane, command))
+    )
+    monkeypatch.setattr(restore.paths, "read_layout", lambda: "compact")
+
+    placeholders = restore.pre_create_windows([e], live_panes={"@5": {"%42"}})
+
+    assert new_window_calls == []  # reused the existing window
+    assert "@5" in placeholders
+    ph = placeholders["@5"]
+    assert ph.pane_id == "%42"
+    assert ph.new_window_id == "@5"
+    assert ph.entry.claude_session_id == "sid-1"
+    # Existing pane respawned into the tail-log placeholder (shows retry progress).
+    assert respawns == [("%42", startup.placeholder_command("@5"))]
+    # State reset from errored back to starting.
+    s = json.loads(paths.worktree_state_file(wt, "42").read_text())
+    assert s["phase"] == phase.STARTING
+
+
+def test_retry_reactivates_errored_placeholder_from_windows_dir(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
+):
+    """End-to-end retry: after a failed restore, windows/ holds a mapping for
+    a live-but-errored placeholder pane and windows.previous/ is gone. A
+    second agent-restore must plan it as `reactivate` and respawn Claude into
+    the SAME pane — the bug was it planned nothing (skip) and did nothing."""
+    from tmux_agents.commands import restore
+    from tmux_agents import tmux, startup, phase, windows
+
+    wt = tmp_path / "scripts"  # host-only project (no container)
+    windows.write_mapping(
+        windows.WindowMapping(
+            window_id="@new-1",
+            project="scripts",
+            branch=None,
+            host_worktree=wt,
+            pane_id="42",
+            claude_session_id="sid-1",
+        )
+    )
+    startup._write_pane_state(wt, "42", phase_value=phase.ERRORED)
+    assert not paths.windows_previous_dir().exists()  # first run deleted it
+
+    live_panes = {"@new-1": {"%42"}}
+    monkeypatch.setattr(tmux, "session_exists", lambda s: True)
+    monkeypatch.setattr(restore.paths, "read_layout", lambda: "compact")
+    respawns: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tmux, "respawn_pane", lambda pane, *, command: respawns.append((pane, command))
+    )
+    from tmux_agents import provisioning
+
+    monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **kw: True)
+
+    projs = _load_test_projects(projects_file)
+    plan = restore.plan_entries(live_panes=live_panes, projects=projs)
+    assert len(plan) == 1
+    assert plan[0].kind == "reactivate"
+
+    placeholders = restore.pre_create_windows(plan, live_panes=live_panes)
+    restore.execute_plan(plan, placeholders, projs)
+
+    # Claude was respawned into the SAME pane %42, not a new window.
+    claude_respawns = [(p, c) for p, c in respawns if "claude" in c]
+    assert claude_respawns
+    assert all(p == "%42" for p, c in claude_respawns)
 
 
 def test_pre_create_revive_reaps_duplicate_overview_panes(
