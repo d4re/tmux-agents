@@ -121,6 +121,20 @@ is cleared to `None` once `_provision` confirms the real worktree path. On
 a fatal failure before the worktree exists, it is set to `"errored"` to
 show `X`. A present worktree state file always wins over `phase_hint`.
 
+**Mapping GC is two-phase.** When the tick sees a `windows/<id>.json`
+whose window is no longer live, it does *not* delete it: it stamps
+`orphaned_at` on the mapping and moves on. Only once the window has been
+absent for `_ORPHAN_GRACE_SECONDS` (90s) does `windows.forget` delete the
+mapping plus that pane's `state-`/`session-`/`pending-` files. The delay
+exists because the mapping set *is* the restore snapshot: tmux closes
+every window a moment before the server exits, so an eager prune deletes
+the whole snapshot during shutdown and the next `agents` finds nothing to
+restore. Ticks stop when the server dies, so a tombstone written during
+shutdown is never followed by a delete. A deliberate `agent-kill` calls
+`windows.forget` directly, so killed agents drop out immediately and never
+show up in a restore prompt. A mapping that is unreadable or malformed is
+still deleted on sight — there's nothing restorable in it.
+
 Pane-dead detection is host-side: one batched `tmux list-panes -s`
 call per tick via `tmux.window_pane_map(session)` returns the set of
 live pane ids per window. A window is flagged `X` either when its
@@ -246,7 +260,7 @@ shell-outs to the dedicated module rather than inline.
 | `registry.py` | Scans a pane's `pending-<pane>/` marker dir, computes each marker's effective expiry (exact from `scheduledFor`/cron-expr where possible, heuristic timeout otherwise), GCs expired ones, returns live background/sleeping counts. Uses `croniter` for one-shot cron next-fire (host-side, local TZ). |
 | `theme.py` | Color palette. Dark + light defaults, optional `theme.toml` overrides, derived ANSI/tmux/contrast variants for active-row inversion. Cached per-process. |
 | `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, split, kill, option setters. |
-| `windows.py` | The `<config_dir>/windows/<window_id>.json` mapping that lets the host tick translate a tmux window into the worktree path + pane id its hooks write under. |
+| `windows.py` | The `<config_dir>/windows/<window_id>.json` mapping that lets the host tick translate a tmux window into the worktree path + pane id its hooks write under. `forget(window_id)` is the single teardown path (mapping + that pane's state/session/pending files); it is also what removes an agent from the restore snapshot, so only `agent-kill` and the tick's grace-period GC may call it. |
 | `config.py` | `projects.toml` loader. Resolves `container` vs `devcontainer = true`, fills in defaults (`up_cmd`, `exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
 | `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), `ensure_up` (runs `up_cmd` once if down), and `rebuild` (force-recreate: devcontainer projects append `--remove-existing-container` [+ `--build-no-cache`] to `up_cmd`; named-container projects `docker rm -f` then re-run `up_cmd`). |
 | `exec_cmd.py` | Shared builder `build(proj, *, branch, claude_session_id, container_name, label)` for the pane launch command, injecting ` --resume <id>` via the `{resume_args}` placeholder. Used by both `agent-restore` and `agent-rebuild` so resume semantics stay identical. |
@@ -453,7 +467,9 @@ is set, our own groups are replaced wholesale on upgrade.
 ### Persistence
 
 After an `agents` server restart (laptop reboot, manual kill), the
-launcher detects the orphaned `windows/<window_id>.json` snapshot and
+surviving `windows/<window_id>.json` mappings *are* the snapshot — which
+is why the tick's GC tombstones before deleting (see "Mapping GC is
+two-phase" above). The launcher detects the orphaned snapshot and
 prompts the user (`Restore N previous agents? [Y/n]`, 5-second
 default-Y timer). On consent it moves the snapshot to
 `windows.previous/`, starts tmux detached, spawns

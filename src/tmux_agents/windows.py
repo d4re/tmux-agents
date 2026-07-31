@@ -8,6 +8,7 @@ locate per-worktree state JSON files written by Claude hooks.
 
 from __future__ import annotations
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from tmux_agents import paths
@@ -25,6 +26,9 @@ class WindowMapping:
     claude_session_id: str | None = None
     window_index: int | None = None
     phase_hint: str | None = None
+    # Epoch seconds when the tick first saw this window gone. Tombstone for the
+    # deferred GC in state_tick — see `forget` and `_prune_windows_and_worktree_files`.
+    orphaned_at: float | None = None
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -39,6 +43,8 @@ class WindowMapping:
             d["window_index"] = self.window_index
         if self.phase_hint is not None:
             d["phase_hint"] = self.phase_hint
+        if self.orphaned_at is not None:
+            d["orphaned_at"] = self.orphaned_at
         return d
 
     @classmethod
@@ -52,6 +58,7 @@ class WindowMapping:
             claude_session_id=d.get("claude_session_id"),
             window_index=d.get("window_index"),
             phase_hint=d.get("phase_hint"),
+            orphaned_at=d.get("orphaned_at"),
         )
 
 
@@ -69,6 +76,31 @@ def read_mapping(window_id: str) -> WindowMapping | None:
     if d is None:
         return None
     return WindowMapping.from_dict(window_id, d)
+
+
+def forget(window_id: str) -> None:
+    """Delete a window's mapping plus the per-pane files it points at.
+
+    This is what removes an agent from the restore snapshot, so it must only
+    run when the window is *deliberately* gone — `agent-kill`, or the tick's
+    deferred GC once the tombstone grace period has elapsed. Calling it the
+    moment a window disappears would wipe the snapshot during tmux shutdown,
+    when every pane dies a few ticks before the server does."""
+    try:
+        m = read_mapping(window_id)
+    except KeyError:
+        logger.debug("malformed mapping for %s, skipping worktree cleanup", window_id)
+        m = None
+    if m is not None:
+        for f in (
+            paths.worktree_state_file(m.host_worktree, m.pane_id),
+            paths.worktree_session_id_file(m.host_worktree, m.pane_id),
+        ):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(
+            paths.worktree_pending_dir(m.host_worktree, m.pane_id), ignore_errors=True
+        )
+    paths.window_mapping_file(window_id).unlink(missing_ok=True)
 
 
 def live_branches_for(project: str) -> set[str]:
