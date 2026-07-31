@@ -105,11 +105,16 @@ def hold_pane_then_exec(pane_id: str, log_path: Path, exec_cmd: str) -> None:
     non-modal — other windows are unaffected. Used when startup finished but
     emitted a non-fatal warning that would otherwise be wiped by respawning
     straight into Claude."""
-    # `read` waits for Enter; `exec` replaces the shell so TMUX_PANE survives.
+    # `read` waits for Enter, then `exec_cmd` runs exactly as tmux would run it
+    # on the no-warning path (`respawn-pane` hands the string to `sh -c`).
+    # Do NOT prefix it with `exec`: every exec_cmd starts with `cd <workdir> &&`
+    # (see config._HOST_ONLY_DEFAULT_EXEC_CMD), and `exec cd …` looks for an
+    # external `cd` binary, fails 127, and kills the pane the instant the user
+    # presses Enter. The `exec claude` inside exec_cmd already replaces the shell.
     inner = (
         f'cat "{log_path}"; '
         'printf "\\n\\n  startup finished with warnings — press Enter to launch Claude "; '
         "read _; "
-        f"exec {exec_cmd}"
+        f"{exec_cmd}"
     )
     _respawn_with_retry(pane_id, f"sh -c {shlex.quote(inner)}")
