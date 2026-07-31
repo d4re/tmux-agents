@@ -247,6 +247,16 @@ SIGTERMed and replaced; healthy ones are left alone (idempotent
 
 ## Session restore
 
+**The `windows/` mapping set is the restore snapshot.** Anything that
+deletes a mapping is deciding an agent won't come back, so mapping
+deletion is funnelled through `windows.forget` and gated: `agent-kill`
+calls it directly (deliberate), and the state tick only calls it after
+tombstoning the mapping (`orphaned_at`) and seeing the window stay gone
+for 90s. Never make the tick delete a mapping the first time a window
+goes missing — tmux closes every window a beat before the server exits,
+so the eager version wiped the whole snapshot on shutdown and the next
+`agents` had nothing to restore (silent: no prompt, no error).
+
 `agents` runs `agent-restore` automatically on fresh-server start when
 `~/.config/tmux-agents/windows/` has stale entries. The launcher prompts,
 moves the snapshot to `windows.previous/`, starts tmux detached, spawns

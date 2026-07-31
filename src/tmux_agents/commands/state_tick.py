@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -30,6 +29,11 @@ from tmux_agents import (
 )
 
 logger = logging.getLogger(__name__)
+
+# How long a window must stay gone before its mapping is deleted. Only needs to
+# outlast a tmux shutdown (sub-second) with room for a stalled tick; kept short
+# enough that a killed window's files don't linger noticeably.
+_ORPHAN_GRACE_SECONDS = 90.0
 
 
 def _read_session_id(worktree: Path, pane_id: str) -> str | None:
@@ -54,9 +58,20 @@ def _read_phase(state_file: Path) -> str:
     return j.get("phase", phase.IDLE)
 
 
-def _prune_windows_and_worktree_files(live_ids: set[str]) -> None:
-    """Drop mapping files for dead windows + the per-worktree state/count files
-    they pointed at. Mapping is read BEFORE its file is unlinked."""
+def _prune_windows_and_worktree_files(live_ids: set[str], now: float) -> None:
+    """Two-phase GC of mappings for windows that are no longer live.
+
+    First tick a window is missing, its mapping is *tombstoned*
+    (`orphaned_at`); only after `_ORPHAN_GRACE_SECONDS` of continued absence
+    is it deleted along with the per-worktree state/pending files.
+
+    The delay is what makes session restore survive shutdown. tmux tears an
+    exiting session down window-by-window while the server (and therefore the
+    status-line tick) is still running, so an eager prune sees every agent
+    window vanish and deletes the entire snapshot moments before the server
+    exits — leaving `agents` nothing to offer a restore for on the next
+    start. Ticks stop when the server dies, so a tombstone written during
+    shutdown is never followed by the delete."""
     d = paths.windows_dir()
     if not d.exists():
         return
@@ -71,15 +86,22 @@ def _prune_windows_and_worktree_files(live_ids: set[str]) -> None:
                 f.stem,
             )
             mapping = None
-        if mapping is not None:
-            paths.worktree_state_file(mapping.host_worktree, mapping.pane_id).unlink(
-                missing_ok=True
+        if mapping is None:
+            # Unreadable/malformed: nothing restorable in it, drop it now.
+            f.unlink(missing_ok=True)
+            continue
+        if mapping.orphaned_at is None:
+            windows.write_mapping(dataclasses.replace(mapping, orphaned_at=now))
+            logger.info(
+                "window %s gone; tombstoned, deleting in %.0fs",
+                f.stem,
+                _ORPHAN_GRACE_SECONDS,
             )
-            shutil.rmtree(
-                paths.worktree_pending_dir(mapping.host_worktree, mapping.pane_id),
-                ignore_errors=True,
-            )
-        f.unlink(missing_ok=True)
+            continue
+        if now - mapping.orphaned_at < _ORPHAN_GRACE_SECONDS:
+            continue
+        logger.info("window %s gone for %.0fs; pruning", f.stem, _ORPHAN_GRACE_SECONDS)
+        windows.forget(f.stem)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,8 +139,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     live_ids = {w.id for w in wins}
     # If the windows_dir on disk has more mappings than live_ids has agent
-    # windows, the prune is about to delete some — log a heads-up so we can
-    # correlate next time it fires unexpectedly.
+    # windows, the GC below is about to tombstone (and eventually delete)
+    # some — log a heads-up so we can correlate next time it fires
+    # unexpectedly.
     try:
         existing = sorted(p.stem for p in paths.windows_dir().glob("*.json"))
     except OSError:
@@ -127,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     suspicious = [s for s in existing if s not in live_ids]
     if suspicious:
         logger.warning(
-            "tick.start live_ids=%s existing=%s about_to_prune=%s",
+            "tick.start live_ids=%s existing=%s orphaned=%s",
             sorted(live_ids),
             existing,
             suspicious,
@@ -181,6 +204,10 @@ def main(argv: list[str] | None = None) -> int:
             updates["claude_session_id"] = sid
         if win.index != mapping.window_index:
             updates["window_index"] = win.index
+        if mapping.orphaned_at is not None:
+            # Window id reused by a new server before the GC fired; the
+            # tombstone belongs to the previous occupant.
+            updates["orphaned_at"] = None
         if updates:
             windows.write_mapping(dataclasses.replace(mapping, **updates))
 
@@ -192,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # No host-side .state files to clean up — the derived letter now lives in
     # the @state_code window option, which dies with its window.
-    _prune_windows_and_worktree_files(live_ids)
+    _prune_windows_and_worktree_files(live_ids, now)
 
     print(overview.render_summary(counts=counts), end="")
     return 0

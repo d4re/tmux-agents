@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import time
@@ -175,9 +176,7 @@ def test_tick_skips_control_window(
     assert _state_code(batches, "@0") is None  # ctrl window gets no @state_code
 
 
-def test_tick_prunes_mapping_and_worktree_files_for_dead_windows(
-    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
-):
+def _dead_window_fixture(tmp_path: Path) -> Path:
     wt = tmp_path / "repo"
     wt.mkdir()
     windows.write_mapping(_mapping("@99", wt))
@@ -185,11 +184,55 @@ def test_tick_prunes_mapping_and_worktree_files_for_dead_windows(
     (wt / ".local" / ".tmux-agents" / "state-23.json").write_text('{"phase":"running"}')
     (wt / ".local" / ".tmux-agents" / "pending-23").mkdir(parents=True)
     (wt / ".local" / ".tmux-agents" / "pending-23" / "subagent__a1").write_text("")
+    return wt
+
+
+def test_tick_tombstones_dead_window_before_pruning_it(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """First tick after a window disappears must only tombstone. tmux closes
+    every window a moment before the server exits, so an eager prune here
+    destroys the restore snapshot on shutdown."""
+    wt = _dead_window_fixture(tmp_path)
     _configure_live(monkeypatch, [])
+    state_tick.main([])
+    m = windows.read_mapping("@99")
+    assert m is not None and m.orphaned_at is not None
+    assert (wt / ".local" / ".tmux-agents" / "state-23.json").exists()
+    assert (wt / ".local" / ".tmux-agents" / "pending-23").exists()
+
+
+def test_tick_prunes_mapping_and_worktree_files_after_grace_period(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    wt = _dead_window_fixture(tmp_path)
+    _configure_live(monkeypatch, [])
+    state_tick.main([])
+    stale = time.time() - state_tick._ORPHAN_GRACE_SECONDS - 1
+    m = windows.read_mapping("@99")
+    assert m is not None
+    windows.write_mapping(dataclasses.replace(m, orphaned_at=stale))
     state_tick.main([])
     assert not paths.window_mapping_file("@99").exists()
     assert not (wt / ".local" / ".tmux-agents" / "state-23.json").exists()
     assert not (wt / ".local" / ".tmux-agents" / "pending-23").exists()
+
+
+def test_tick_clears_tombstone_when_window_id_is_live_again(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """A new server can hand out an id the previous one used; the stale
+    tombstone must not survive to prune the new window's mapping."""
+    wt = tmp_path / "repo"
+    wt.mkdir()
+    windows.write_mapping(
+        dataclasses.replace(_mapping("@1", wt), orphaned_at=time.time() - 1000)
+    )
+    _write_state_json(wt, "23", "running")
+    _configure_live(monkeypatch, [tmux.Window(id="@1", index=1, name="p")])
+    state_tick.main([])
+    m = windows.read_mapping("@1")
+    assert m is not None and m.orphaned_at is None
 
 
 def test_tick_noop_when_session_missing(monkeypatch, tmp_config_dir, tmp_state_dir):

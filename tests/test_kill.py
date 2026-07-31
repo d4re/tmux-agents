@@ -238,6 +238,30 @@ def test_kill_interactive_picks_window_and_kills_without_prune(
     assert killed == ["@2"]
 
 
+def test_kill_drops_mapping_and_pane_files_immediately(
+    kill_env, monkeypatch, tmp_config_dir, tmp_state_dir
+):
+    """A deliberate kill must forget the window now, not leave it to the
+    tick's grace-period GC — otherwise the next `agents` offers to restore
+    an agent the user just killed."""
+    wt = kill_env.repo / ".worktrees" / "feat-x"
+    _write_mapping("@1", "api", "feat-x", wt)
+    state_dir = wt / ".local" / ".tmux-agents"
+    state_dir.mkdir(parents=True)
+    (state_dir / "state-23.json").write_text('{"phase":"running"}')
+    (state_dir / "session-23.id").write_text("x" * 36)
+    (state_dir / "pending-23").mkdir()
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+    monkeypatch.setattr(pickers, "prompt_yes_no", lambda prompt, *, default: False)
+
+    assert kill.main([]) == 0
+    assert kill_env.killed == ["@1"]
+    assert windows.read_mapping("@1") is None
+    assert not (state_dir / "state-23.json").exists()
+    assert not (state_dir / "session-23.id").exists()
+    assert not (state_dir / "pending-23").exists()
+
+
 def test_kill_interactive_prune_yes_clean_kills(kill_env, monkeypatch, tmp_state_dir):
     _write_mapping("@1", "api", "feat-x", kill_env.repo / ".worktrees" / "feat-x")
     _stub_state(tmp_state_dir, "@1", "I")
