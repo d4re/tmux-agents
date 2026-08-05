@@ -150,7 +150,7 @@ def _mark_entry_failed(e: "Entry", ph: "Placeholder", reason: str) -> None:
         f"\n  agent-restore failed for {label}\n  reason: {reason}\n\n"
         "  Fix the underlying issue (e.g. start Docker) and re-run:\n"
         "    agent-restore\n\n"
-        "  Or remove this window with Ctrl-Space K and re-spawn manually:\n"
+        f"  Or remove this window with {tmux.prefix_label()} k and re-spawn manually:\n"
         f"    agent-new {new_args}\n\n"
     )
     startup.show_static_text(ph.pane_id, body)
