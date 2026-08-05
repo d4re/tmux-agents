@@ -188,7 +188,8 @@ Steps in `commands/new.py` order:
    repo root (worktree path is not yet known); `phase_hint` drives the
    `S` letter until the worktree state file is written.
 6. **Bottom pane** *(split layout only).*
-   `overview.attach_overview_pane` adds the 25% `agent-overview` pane
+   `overview.attach_overview_pane` adds the `agent-overview` pane (initial
+   25% split; the TUI immediately re-fits it to content — see Layouts)
    and tags it `@role=overview`.
 7. **Switch.** `tmux.select_window` makes the new window active.
 8. **Spawn worker.** `_spawn_worker` launches `agent-new --provision …` via
@@ -275,7 +276,7 @@ shell-outs to the dedicated module rather than inline.
 | `hooks/agents.json` | Package data: the hook *dispatch* table (`tui: fullscreen` + per-event invocation of `write-state.sh`). Shipped, not generated. |
 | `hooks/write-state.sh` | Package data: the actual shell body the hooks invoke. Provisioned per worktree at `<worktree>/.local/.tmux-agents/write-state.sh`. Single source for the phase-JSON write + the registry `add-`/`del-` marker subcommands (extracting ids/signals from the hook payload via constrained sed). All counting/expiry/cron-parsing is host-side in `registry.py`. |
 | `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill` / `agent-rebuild`. No tmux/project knowledge. |
-| `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ a/k/r/e, uppercase aliases), and `attach_overview_pane` (`@role=overview`). The TUI auto-tracks the active window unless the user moved the cursor. |
+| `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ a/k/r/e, uppercase aliases), `attach_overview_pane` (`@role=overview`), and content-fit auto-resize (`desired_pane_height` + `refit_self_pane`, publishing `@overview_rows` for the window-resized hook's `overview-refit` script). The TUI auto-tracks the active window unless the user moved the cursor. |
 | `ssh_forward.py` | Probes + pump spawn for SSH agent forwarding. Spawns the pump as `python -m tmux_agents._ssh_pump_script`; the pump delivers the relay into the container as plain files (no inlining). |
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
 | `_ssh_pump_script.py` | Host-side pump. For each in-container SSH op, opens a fresh connection to the host's `$SSH_AUTH_SOCK` and splices it. |
@@ -339,10 +340,27 @@ conversation.
 ### Layouts
 
 - **Split (default).** Each agent window has a top pane (Claude) and a
-  bottom 25% pane running `agent-overview`. The bottom pane is
+  bottom pane running `agent-overview`. The bottom pane is
   identical across windows, so the global overview is always visible. The
   pane is tagged `@role=overview` so the `MouseDown1Pane` binding
   forwards clicks to it without stealing pane focus from the agent.
+
+  The overview pane auto-sizes to its content: `min(rows + footer, a
+  quarter of the window height)`, floored at 2 (the sizing rule is
+  `overview.desired_pane_height`). Two triggers keep it fitted, because
+  tmux itself forgets the split ratio at creation time and crushes the
+  bottom pane first when the terminal shrinks:
+  - **Content changes** — the TUI publishes its desired content height as
+    the `@overview_rows` pane option and resizes its own pane
+    (`overview.refit_self_pane`, called each loop pass, no-op until the
+    row count changes).
+  - **Window resizes** — the `window-resized` hook in agents.conf runs
+    `~/.config/tmux-agents/overview-refit` (shipped from
+    `config/overview-refit`, installed next to `clipboard-copy`), which
+    re-caps the published `@overview_rows` against the new window height.
+    `resize-pane` changes only the layout, never the window size, so the
+    hook cannot re-trigger itself. Manual pane resizes survive until the
+    next content change or window resize.
 - **Compact.** No splits. The status-right is `#(agent-state)` — a single
   format substitution. `agent-state` runs the host tick AND emits the
   summary chunk on stdout (in tmux-format, not ANSI: the substitution

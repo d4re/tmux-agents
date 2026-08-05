@@ -26,7 +26,9 @@ format:
 reinstall:
 	uv tool install --reinstall --no-cache .
 
-# Push this checkout's agents.conf to the live config and reload a running server.
+# Push this checkout's agents.conf (and the scripts it shells out to) to the
+# live config and reload a running server.
 conf-sync:
 	cp agents.conf $(HOME)/.config/tmux-agents/agents.conf
+	cp config/clipboard-copy config/overview-refit $(HOME)/.config/tmux-agents/
 	tmux -L agents source-file $(HOME)/.config/tmux-agents/agents.conf 2>/dev/null || true

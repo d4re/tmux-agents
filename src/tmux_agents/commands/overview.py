@@ -14,6 +14,7 @@ def _run_tui_loop(stdscr) -> None:
     state = overview.make_initial_state(tmux.current_pane_id())
 
     while True:
+        overview.refit_self_pane(state)
         state.row_at_y, state.text_w_at_y = overview.render_curses(
             stdscr, state.rows, state.cursor
         )

@@ -54,7 +54,7 @@ invocations:
 | `make check` | Everything CI gates on: `ruff check` + `ruff format --check` + `pytest`. Run before pushing — tests alone are not the whole CI gate. |
 | `make test` / `make lint` / `make format` | The individual pieces. |
 | `make reinstall` | Reinstall the uv tool from this checkout (see below). |
-| `make conf-sync` | Copy `agents.conf` to the live config + reload the server. |
+| `make conf-sync` | Copy `agents.conf` + the `config/` helper scripts it shells out to (`clipboard-copy`, `overview-refit`) to the live config + reload the server. |
 
 `reinstall` and `conf-sync` mutate **global** state (the one installed
 tool, the one live config) — with multiple agents in sibling worktrees,

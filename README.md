@@ -322,7 +322,7 @@ Keeps `~/.config/tmux-agents/projects.toml`.
 
 ## Layout
 
-- **Split (default, vertical screens):** every window is split 75/25; top = Claude, bottom = overview.
+- **Split (default, vertical screens):** every window is split top = Claude, bottom = overview. The overview pane auto-sizes to its content (all rows + footer, at most a quarter of the window) and re-fits itself when the terminal is resized.
 - **Compact (horizontal screens):** no splits; overview collapses into the tmux status line.
 
 Toggle with `Ctrl-Space L`. The choice persists in `/tmp/tmux-agents/layout`.
