@@ -4,6 +4,12 @@ from tmux_agents import overview, state, tmux
 from tmux_agents.overview import Cursor
 
 
+@pytest.fixture(autouse=True)
+def _fixed_prefix(monkeypatch):
+    """Hint strings must not depend on the machine's live tmux prefix."""
+    monkeypatch.setattr(tmux, "prefix_label", lambda: "Ctrl-Space")
+
+
 def _windows():
     return [
         tmux.Window(id="@1", index=1, name="api:feat-x"),
@@ -276,7 +282,7 @@ def test_render_curses_footer_hint_present_at_bottom_right(tmp_state_dir, monkey
     overview.render_curses(scr, rows, cursor=None)
     last_row_writes = [w for w in scr.writes if w[0] == 9]
     assert any(
-        "Ctrl-Space" in w[2] and "N new" in w[2] and "R restore" in w[2]
+        "Ctrl-Space" in w[2] and "a new" in w[2] and "r restore" in w[2]
         for w in last_row_writes
     )
 
@@ -290,7 +296,7 @@ def test_render_curses_footer_hint_truncated_when_narrow(tmp_state_dir, monkeypa
     last_row_writes = [w for w in scr.writes if w[0] == 9]
     text = "".join(w[2] for w in last_row_writes)
     assert "Ctrl-Space" in text
-    assert "N new" not in text
+    assert "a new" not in text
 
 
 def test_render_curses_footer_hint_omitted_when_too_narrow(tmp_state_dir, monkeypatch):
@@ -301,7 +307,7 @@ def test_render_curses_footer_hint_omitted_when_too_narrow(tmp_state_dir, monkey
     overview.render_curses(scr, rows, cursor=None)
     last_row_writes = [w for w in scr.writes if w[0] == 9]
     text = "".join(w[2] for w in last_row_writes)
-    assert "N" not in text and "K" not in text and "R" not in text
+    assert "a/k/r/e" not in text and "new" not in text
 
 
 def test_render_curses_cursor_row_marked_with_arrow(tmp_state_dir, monkeypatch):
@@ -361,8 +367,8 @@ def test_render_curses_footer_shows_restore_alert_when_errored(
     overview.render_curses(scr, rows, cursor=None)
     text = "".join(w[2] for w in scr.writes if w[0] == 9)
     assert "1 agent down" in text
-    assert "Ctrl-Space R to restore" in text  # full chord, not just the bare key
-    assert "N new" not in text  # alert replaces the nav footer
+    assert "Ctrl-Space r to restore" in text  # full chord, not just the bare key
+    assert "a new" not in text  # alert replaces the nav footer
 
 
 def test_render_curses_restore_alert_is_right_aligned(tmp_state_dir, monkeypatch):
@@ -399,6 +405,17 @@ def test_render_curses_restore_alert_uses_errored_color_and_bold(
     overview.render_curses(scr, rows, cursor=None)
     alert_writes = [w for w in scr.writes if w[0] == 9 and "down" in w[2]]
     assert alert_writes and all(w[3] & curses.A_BOLD for w in alert_writes)
+
+
+def test_footer_reflects_prefix_override(monkeypatch, tmp_state_dir):
+    monkeypatch.setattr(tmux, "prefix_label", lambda: "Alt-Space")
+    monkeypatch.setattr(tmux, "list_windows", lambda s: _windows())
+    _states(tmp_state_dir)
+    rows = overview.build_rows({})
+    scr = _FakeStdscr(height=10, width=80)
+    overview.render_curses(scr, rows, cursor=None)
+    text = "".join(w[2] for w in scr.writes if w[0] == 9)
+    assert "Alt-Space" in text and "Ctrl-Space" not in text
 
 
 # ---------- pane attachment ----------
@@ -500,28 +517,41 @@ def test_handle_key_enter_on_header_toggles_fold_does_not_touch_last_active(
     assert s.last_active == prior_last_active
 
 
-def test_handle_key_n_spawns_new_agent_popup(monkeypatch, tmp_state_dir):
+@pytest.mark.parametrize("key", ["a", "N"])
+def test_handle_key_spawns_new_agent_popup(monkeypatch, tmp_state_dir, key):
     s = _two_agent_state(monkeypatch, tmp_state_dir)
     captured: list[list[str]] = []
     monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))
-    overview.handle_key(s, ord("N"))
+    overview.handle_key(s, ord(key))
     assert captured and captured[0][-1] == "agent-new"
 
 
-def test_handle_key_r_restores_dead(monkeypatch, tmp_state_dir):
-    s = _two_agent_state(monkeypatch, tmp_state_dir)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))
-    overview.handle_key(s, ord("R"))
-    assert captured == [["agent-restore", "--background"]]
-
-
-def test_handle_key_e_renames_current_agent(monkeypatch, tmp_state_dir):
+@pytest.mark.parametrize("key", ["k", "K"])
+def test_handle_key_kills_at_cursor(monkeypatch, tmp_state_dir, key):
     s = _two_agent_state(monkeypatch, tmp_state_dir, active_id="@2")
     s.cursor = Cursor("agent", "@2")
     captured: list[list[str]] = []
     monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))
-    overview.handle_key(s, ord("E"))
+    overview.handle_key(s, ord(key))
+    assert captured and "agent-kill" in " ".join(captured[0])
+
+
+@pytest.mark.parametrize("key", ["r", "R"])
+def test_handle_key_restores_dead(monkeypatch, tmp_state_dir, key):
+    s = _two_agent_state(monkeypatch, tmp_state_dir)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))
+    overview.handle_key(s, ord(key))
+    assert captured == [["agent-restore", "--background"]]
+
+
+@pytest.mark.parametrize("key", ["e", "E"])
+def test_handle_key_renames_current_agent(monkeypatch, tmp_state_dir, key):
+    s = _two_agent_state(monkeypatch, tmp_state_dir, active_id="@2")
+    s.cursor = Cursor("agent", "@2")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))
+    overview.handle_key(s, ord(key))
     assert captured and captured[0][:2] == ["tmux", "-L"]
     assert "agent-rename --window-id @2 %%" in captured[0][-1]
 
