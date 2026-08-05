@@ -75,6 +75,14 @@ behaves like the old code after a reinstall, read
 `~/.local/share/uv/tools/tmux-agents/lib/python3.12/site-packages/tmux_agents/commands/<cmd>.py`
 directly to confirm the install is the culprit before debugging elsewhere.
 
+Also check `which -a agent-overview` (any entry point): a stray
+`pip install -e` into the mise Python shadows the uv tool — mise's bin
+dir precedes `~/.local/bin` on PATH, so every pane and status-line tick
+silently runs the editable checkout instead of the reinstalled tool. This
+actually happened (an agent session pip-installed its scratch repo copy);
+the fix is `.../mise/installs/python/3.12/bin/python3 -m pip uninstall
+tmux-agents`. Never `pip install -e` this repo.
+
 Edits to `agents.conf` in the repo also don't take effect until they reach
 `~/.config/tmux-agents/agents.conf`. `make conf-sync` does the copy +
 live-server reload in one step.
