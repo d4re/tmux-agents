@@ -207,3 +207,38 @@ def test_split_window_before_targets_pane_id(monkeypatch):
     assert "-v" in args
     assert "-l" in args and "75%" in args
     assert "-t" in args and "%9" in args  # pane id, not window id
+
+
+# ----- prefix_label: humanized prefix for hint strings -----
+@pytest.mark.parametrize(
+    "stdout,expected",
+    [
+        ("C-Space\n", "Ctrl-Space"),
+        ("M-Space\n", "Alt-Space"),
+        ("F12\n", "F12"),
+        ("C-b\n", "Ctrl-b"),
+    ],
+)
+def test_prefix_label_humanizes(monkeypatch, stdout, expected):
+    _stub_run(monkeypatch, stdout=stdout)
+    assert tmux.prefix_label() == expected
+
+
+def test_prefix_label_falls_back_when_server_unreachable(monkeypatch):
+    _stub_run(monkeypatch, stdout="", returncode=1)
+    assert tmux.prefix_label() == "Ctrl-Space"
+
+
+def test_prefix_label_is_cached(monkeypatch):
+    calls = _stub_run(monkeypatch, stdout="C-Space\n")
+    tmux.prefix_label()
+    tmux.prefix_label()
+    assert len(calls) == 1
+
+
+def test_prefix_label_falls_back_when_tmux_binary_missing(monkeypatch):
+    def fake_run(cmd, capture_output=False, text=False, check=False, input=None):
+        raise FileNotFoundError("tmux")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert tmux.prefix_label() == "Ctrl-Space"
