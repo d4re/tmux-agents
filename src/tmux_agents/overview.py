@@ -537,6 +537,39 @@ class TuiState:
     self_pane_id: str
     row_at_y: list[Cursor | None] = field(default_factory=list)
     text_w_at_y: list[int] = field(default_factory=list)
+    published_rows: int | None = None  # last row count refit_self_pane applied
+
+
+def desired_pane_height(n_rows: int, window_height: int) -> int:
+    """Content-fit height for the overview pane: every row plus the footer
+    line, capped at a quarter of the window (the agent pane keeps the bulk)
+    and floored at 2 (footer alone is useless)."""
+    cap = max(2, window_height // 4)
+    return max(2, min(n_rows + 1, cap))
+
+
+def refit_self_pane(state: TuiState) -> None:
+    """Resize our own pane to fit the current rows and publish the desired
+    content height as `@overview_rows` (the window-resized hook's
+    overview-refit script re-caps it against the new window height).
+
+    Called every loop iteration; no-ops until the row count changes, so the
+    steady state costs zero subprocess calls. Only reacts to *content*
+    changes — window resizes are the hook's job, and pane resizes the user
+    made by hand are deliberately left alone until content or window size
+    moves again. Transient tmux errors are swallowed (a resize is cosmetic,
+    never worth killing the TUI) and not cached, so the next call retries."""
+    n = len(state.rows)
+    if n == state.published_rows:
+        return
+    try:
+        tmux.set_pane_option(state.self_pane_id, "@overview_rows", str(n + 1))
+        height = desired_pane_height(n, tmux.pane_window_height(state.self_pane_id))
+        tmux.resize_pane(state.self_pane_id, height=height)
+    except subprocess.CalledProcessError:
+        logger.debug("overview: refit of %s failed", state.self_pane_id, exc_info=True)
+        return
+    state.published_rows = n
 
 
 def make_initial_state(self_pane_id: str) -> TuiState:

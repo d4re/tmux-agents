@@ -41,6 +41,10 @@ _PREFIX = ["tmux", "-L", "agents"]
         ),
         (lambda: tmux.select_pane("%7"), ["select-pane", "-t", "%7"]),
         (
+            lambda: tmux.resize_pane("%9", height=6),
+            ["resize-pane", "-t", "%9", "-y", "6"],
+        ),
+        (
             lambda: tmux.respawn_pane("%23", command="echo hi"),
             ["respawn-pane", "-k", "-t", "%23", "echo hi"],
         ),
@@ -56,15 +60,27 @@ def test_fire_and_forget_argv(monkeypatch, action, expected_tail):
 @pytest.mark.parametrize(
     "action,stdout,expected",
     [
-        (lambda: tmux.current_pane_id(), "%42\n", "%42"),
         (lambda: tmux.active_pane_id("@5"), "%23\n", "%23"),
         (lambda: tmux.is_window_pinned("@1"), "1\n", True),
         (lambda: tmux.is_window_pinned("@1"), "", False),
+        (lambda: tmux.pane_window_height("%9"), "58\n", 58),
     ],
 )
 def test_stdout_parsers(monkeypatch, action, stdout, expected):
     _stub_run(monkeypatch, stdout=stdout)
     assert action() == expected
+
+
+def test_current_pane_id_reads_tmux_pane_env_not_display_message(monkeypatch):
+    """Must come from $TMUX_PANE: `display-message -p` without -t resolves to
+    the session's *active* pane, not the calling process's pane — from the
+    overview pane that returned the Claude pane's id (or the ctrl pane on a
+    detached server), so the TUI published @overview_rows to, and resized,
+    the wrong pane."""
+    calls = _stub_run(monkeypatch, stdout="%0\n")
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    assert tmux.current_pane_id() == "%7"
+    assert calls == []  # no subprocess involved
 
 
 def test_is_window_pinned_argv(monkeypatch):

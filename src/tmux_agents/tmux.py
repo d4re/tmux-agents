@@ -2,6 +2,7 @@
 invocations here, not inline in callers."""
 
 from __future__ import annotations
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -201,8 +202,12 @@ def select_pane(pane_id: str) -> None:
 
 
 def current_pane_id() -> str:
-    """pane_id of the pane this process is running in (always set under tmux)."""
-    return _run(["display-message", "-p", "#{pane_id}"], check=True).stdout.strip()
+    """pane_id of the pane this process is running in, from $TMUX_PANE (tmux
+    sets it for every pane process). Deliberately NOT `display-message -p`:
+    without an explicit -t that resolves to the session's *active* pane, not
+    the calling process's pane — from the overview pane it returned whichever
+    pane had focus, so anything keyed on it targeted the wrong pane."""
+    return os.environ["TMUX_PANE"]
 
 
 def set_window_option(window_id: str, name: str, value: str) -> None:
@@ -310,6 +315,18 @@ def active_pane_id(window_id: str) -> str:
 
 def set_pane_option(pane_id: str, name: str, value: str) -> None:
     _run(["set-option", "-pt", pane_id, name, value], check=True)
+
+
+def pane_window_height(pane_id: str) -> int:
+    """Height of the window containing `pane_id` (not the pane's own height)."""
+    out = _run(
+        ["display-message", "-p", "-t", pane_id, "#{window_height}"], check=True
+    ).stdout.strip()
+    return int(out)
+
+
+def resize_pane(pane_id: str, *, height: int) -> None:
+    _run(["resize-pane", "-t", pane_id, "-y", str(height)], check=True)
 
 
 def display_message(text: str) -> None:

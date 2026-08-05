@@ -67,6 +67,11 @@ cp "$REPO_DIR/agents.conf" "$CONFIG_AGENTS/agents.conf"
 cp "$REPO_DIR/config/clipboard-copy" "$CONFIG_AGENTS/clipboard-copy"
 chmod +x "$CONFIG_AGENTS/clipboard-copy"
 
+# 3c. overview-refit — re-fits @role=overview panes after a window resize
+# (agents.conf's window-resized hook shells out to it).
+cp "$REPO_DIR/config/overview-refit" "$CONFIG_AGENTS/overview-refit"
+chmod +x "$CONFIG_AGENTS/overview-refit"
+
 # 4. Example projects.toml (never overwrite an edited one)
 if [[ ! -f "$CONFIG_AGENTS/projects.toml" ]]; then
   cp "$REPO_DIR/config/projects.toml.example" "$CONFIG_AGENTS/projects.toml"

@@ -54,7 +54,7 @@ invocations:
 | `make check` | Everything CI gates on: `ruff check` + `ruff format --check` + `pytest`. Run before pushing — tests alone are not the whole CI gate. |
 | `make test` / `make lint` / `make format` | The individual pieces. |
 | `make reinstall` | Reinstall the uv tool from this checkout (see below). |
-| `make conf-sync` | Copy `agents.conf` to the live config + reload the server. |
+| `make conf-sync` | Copy `agents.conf` + the `config/` helper scripts it shells out to (`clipboard-copy`, `overview-refit`) to the live config + reload the server. |
 
 `reinstall` and `conf-sync` mutate **global** state (the one installed
 tool, the one live config) — with multiple agents in sibling worktrees,
@@ -74,6 +74,14 @@ Don't use `--force` either — same hazard. If an installed command still
 behaves like the old code after a reinstall, read
 `~/.local/share/uv/tools/tmux-agents/lib/python3.12/site-packages/tmux_agents/commands/<cmd>.py`
 directly to confirm the install is the culprit before debugging elsewhere.
+
+Also check `which -a agent-overview` (any entry point): a stray
+`pip install -e` into the mise Python shadows the uv tool — mise's bin
+dir precedes `~/.local/bin` on PATH, so every pane and status-line tick
+silently runs the editable checkout instead of the reinstalled tool. This
+actually happened (an agent session pip-installed its scratch repo copy);
+the fix is `.../mise/installs/python/3.12/bin/python3 -m pip uninstall
+tmux-agents`. Never `pip install -e` this repo.
 
 Edits to `agents.conf` in the repo also don't take effect until they reach
 `~/.config/tmux-agents/agents.conf`. `make conf-sync` does the copy +

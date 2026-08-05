@@ -1,0 +1,37 @@
+#!/bin/sh
+# Re-fit a window's @role=overview pane after the window was resized.
+# Usage: overview-refit <socket-path> <window-id>
+#
+# Invoked by the `window-resized` hook in agents.conf. tmux converts the
+# overview pane's 25% split to absolute cells at creation and its resize
+# algorithm crushes the bottom pane first on shrink, so without this a
+# smaller terminal leaves the overview 1 row tall.
+#
+# Height rule: the content height agent-overview publishes as the
+# @overview_rows pane option (rows + footer), capped at a quarter of the
+# window, floored at 2. Mirrors overview.desired_pane_height() in Python —
+# keep the two in sync. Before the TUI's first publish, fall back to the cap.
+set -eu
+
+sock=$1
+wid=$2
+
+tmux -S "$sock" list-panes -t "$wid" \
+    -F '#{pane_id}:#{window_height}:#{@role}:#{@overview_rows}' |
+while IFS=: read -r pane wh role rows; do
+    if [ "$role" != overview ]; then
+        continue
+    fi
+    cap=$((wh / 4))
+    if [ "$cap" -lt 2 ]; then
+        cap=2
+    fi
+    h=${rows:-$cap}
+    if [ "$h" -gt "$cap" ]; then
+        h=$cap
+    fi
+    if [ "$h" -lt 2 ]; then
+        h=2
+    fi
+    tmux -S "$sock" resize-pane -t "$pane" -y "$h"
+done
