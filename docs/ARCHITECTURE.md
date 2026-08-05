@@ -22,6 +22,12 @@ Everything runs on a dedicated tmux socket and config:
 - Config: `~/.config/tmux-agents/agents.conf`
 - Volatile state: `/tmp/tmux-agents/` (override with `TMUX_AGENTS_STATE_DIR`)
 
+`agents.conf` sources `~/.config/tmux-agents/local.conf` as its last line
+(silently skipped if absent) as a user-override hook: tmux config is
+last-write-wins, so anything there beats the shipped defaults, and neither
+`install.sh` nor `make conf-sync` ever touch it, so overrides (e.g. a
+different prefix key) survive updates.
+
 Nothing is written under `~/.config/tmux/`, so a user's existing tmux setup
 (z4h auto-tmux, default-socket sessions) is untouched. The `agents`
 launcher detects whether an `agents` tmux session is
@@ -269,7 +275,7 @@ shell-outs to the dedicated module rather than inline.
 | `hooks/agents.json` | Package data: the hook *dispatch* table (`tui: fullscreen` + per-event invocation of `write-state.sh`). Shipped, not generated. |
 | `hooks/write-state.sh` | Package data: the actual shell body the hooks invoke. Provisioned per worktree at `<worktree>/.local/.tmux-agents/write-state.sh`. Single source for the phase-JSON write + the registry `add-`/`del-` marker subcommands (extracting ids/signals from the hook payload via constrained sed). All counting/expiry/cron-parsing is host-side in `registry.py`. |
 | `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill` / `agent-rebuild`. No tmux/project knowledge. |
-| `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ N K R), and `attach_overview_pane` (`@role=overview`). The TUI auto-tracks the active window unless the user moved the cursor. |
+| `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ a/k/r/e, uppercase aliases), and `attach_overview_pane` (`@role=overview`). The TUI auto-tracks the active window unless the user moved the cursor. |
 | `ssh_forward.py` | Probes + pump spawn for SSH agent forwarding. Spawns the pump as `python -m tmux_agents._ssh_pump_script`; the pump delivers the relay into the container as plain files (no inlining). |
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
 | `_ssh_pump_script.py` | Host-side pump. For each in-container SSH op, opens a fresh connection to the host's `$SSH_AUTH_SOCK` and splices it. |
@@ -299,14 +305,14 @@ delivered-file import path under `python -E -S`.
 | `agents` | `commands/launcher.py` | Probe live session / snapshot, prompt user on stale snapshot, orchestrate restore handoff (`agent-restore --background`) before `execvp` into `tmux attach`. Falls through to plain `new-session -A` when no snapshot exists. Primary entry point. |
 | `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve (or a `check_freshness` base-staleness check in no-branch mode) + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`, e.g. a checkout behind `origin/<default>`), show error pane on fatal failure (`X`). |
 | `agent-kill [<window>] [--prune-worktree] [--force]` | `commands/kill.py` | fzf picker by default; can target by `--window-id`. Optional `git worktree remove` (interactive force-retry on dirty). |
-| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space B`. |
+| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space b`. |
 | `agent-state` | `commands/state_tick.py` | Single tick of the host poll. Wired into `status-right` so tmux runs it every status interval. |
 | `agent-overview` | `commands/overview.py` | Curses TUI for the split-layout bottom pane. The status-line summary is emitted inline by `agent-state` — `render_summary` is called as a function, not via this CLI. |
 | `agent-rename --window-id <id> [--from-hook] <name>` | `commands/rename.py` | Replace the `:branch` half of `<repo>:<branch>`. Explicit (non-hook) renames set the `@pinned` window option; `agent-new` and `agent-restore` also set it when a branch is supplied at creation. `--from-hook` is the `pane-title-changed` mode that silently no-ops on ctrl/`@pinned`/unknown windows or empty names — so the hook keeps tracking Claude's titles on unpinned windows but never overwrites a branch label. |
 | `agent-layout` | `commands/layout.py` | Toggle persistent layout file (`<state_dir>/layout`) between `split` and `compact`; rebuilds existing windows accordingly. |
-| `agent-restore [--background]` | `commands/restore.py` | Read snapshot, pre-create placeholder windows (with overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump per container project, `respawn-pane` each pane with `claude --resume <id>`. Triggered automatically by the launcher; runnable manually for partial-failure retry or dead-pane recovery, bound to `Ctrl-Space R`. |
-| `agent-vscode --window-id <id>` | `commands/vscode.py` | Open the current agent's worktree in VS Code. Host projects → `code <host_worktree>`. Container / devcontainer projects → `code --folder-uri vscode-remote://attached-container+<hex>/<container_workdir>`, reattaching to the running container resolved by `container.current_name` (no rebuild, no second container). Resolves the `code` binary via `shutil.which` first, then falls back to a top-level `code_path` in `projects.toml` (default: `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`). Bound to `Ctrl-Space V`. |
-| `agent-terminal --window-id <id>` | `commands/terminal.py` | Pop up a shell in the active agent's context. Host projects → `os.chdir(host_worktree)` then `exec $SHELL -l` (fallback `/bin/bash`). Container / devcontainer projects → `os.execvp("docker", ["exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE", "-u", user, "-w", workdir, name, "bash", "-il"])`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space T` via `display-popup -E`. |
+| `agent-restore [--background]` | `commands/restore.py` | Read snapshot, pre-create placeholder windows (with overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump per container project, `respawn-pane` each pane with `claude --resume <id>`. Triggered automatically by the launcher; runnable manually for partial-failure retry or dead-pane recovery, bound to `Ctrl-Space r`. |
+| `agent-vscode --window-id <id>` | `commands/vscode.py` | Open the current agent's worktree in VS Code. Host projects → `code <host_worktree>`. Container / devcontainer projects → `code --folder-uri vscode-remote://attached-container+<hex>/<container_workdir>`, reattaching to the running container resolved by `container.current_name` (no rebuild, no second container). Resolves the `code` binary via `shutil.which` first, then falls back to a top-level `code_path` in `projects.toml` (default: `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`). Bound to `Ctrl-Space v`. |
+| `agent-terminal --window-id <id>` | `commands/terminal.py` | Pop up a shell in the active agent's context. Host projects → `os.chdir(host_worktree)` then `exec $SHELL -l` (fallback `/bin/bash`). Container / devcontainer projects → `os.execvp("docker", ["exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE", "-u", user, "-w", workdir, name, "bash", "-il"])`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space t` via `display-popup -E`. |
 
 ## Supported features
 
@@ -511,7 +517,7 @@ run left the placeholder pane alive but at `phase=errored` (e.g. Docker
 was down, so `up_cmd` failed and the pane was replaced with the error
 heredoc). Because the launcher deletes `windows.previous/` at the end of
 every run — success or failure — a retry (`agent-restore` /
-`Ctrl-Space R`) reads the live `windows/` mappings, and `classify_entry`
+`Ctrl-Space r`) reads the live `windows/` mappings, and `classify_entry`
 reads the pane's per-pane state file: an alive-but-`errored` pane is
 `reactivate` rather than `skip`. `_pre_create_reactivate` reuses that
 window+pane in place — respawns it back into the `tail -F` placeholder,
@@ -537,8 +543,8 @@ That duplicate-overview state is prevented at the source:
 already has an overview pane), so a layout toggle or restore re-attaching
 to an already-agent-dead window can't add a second overview.
 
-This manual rerun is wired to a recovery shortcut: `Ctrl-Space R` (and
-`R` in the focused overview pane) run `agent-restore --background` via
+This manual rerun is wired to a recovery shortcut: `Ctrl-Space r` (and
+`r` in the focused overview pane) run `agent-restore --background` via
 `run-shell -b`, which revives every dead-pane window and reactivates every
 errored placeholder in one pass, and skips healthy live ones. `--background` forks + `setsid`s and then redirects fd 0/1/2 to
 `/dev/null` (`startup._detach_stdio`); without that detach the backgrounded
@@ -546,11 +552,16 @@ worker keeps `run-shell`'s capture pipe as stdout and tmux paints its output
 (e.g. `devcontainer up` JSON) over the active pane. The
 overview surfaces the affordance — when any window is errored, the curses
 TUI footer is replaced by a right-aligned recovery alert
-(`overview._restore_alert`), `⚠ N agent(s) down — press Ctrl-Space R to
-restore`, in the errored color. Footers spell the full `Ctrl-Space` chord
-(`overview._PREFIX`) so the prefix is discoverable to new users; the bare
-keys still work while the overview pane itself is focused. Because R moved
-to restore, `agent-rename` is bound to `Ctrl-Space E` / `E`.
+(`overview._restore_alert`), `⚠ N agent(s) down — press Ctrl-Space r to
+restore`, in the errored color. Footers spell the full prefix chord via
+`tmux.prefix_label()` — a process-cached read of the live server's `prefix`
+option (falling back to `"Ctrl-Space"` when the server is unreachable, e.g.
+tests) — so a `local.conf` prefix override is reflected in the hint text,
+not just the shipped default; the bare keys still work while the overview
+pane itself is focused. All command keys are now lowercase (`a`/`k`/`b`/`r`/
+`e`/`v`/`t`; layout stays uppercase `L`); the pre-lowercase uppercase keys
+remain bound as silent aliases. `agent-rename` is bound to `Ctrl-Space e` /
+`e` (and the alias `Ctrl-Space E` / `E`).
 
 ### Logging
 
