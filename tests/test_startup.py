@@ -148,4 +148,23 @@ def test_hold_pane_then_exec_shows_log_and_execs(monkeypatch, tmp_state_dir):
     assert str(log) in cmd  # prints the startup log
     assert "press Enter" in cmd  # the hold prompt
     assert "read" in cmd  # waits for Enter
-    assert "exec claude --resume abc" in cmd  # then launches Claude
+    assert "claude --resume abc" in cmd  # then launches Claude
+
+
+def test_hold_pane_then_exec_does_not_exec_prefix_a_cd_command(
+    monkeypatch, tmp_state_dir
+):
+    """The real exec_cmd starts with `cd <workdir> &&`. Prefixing it with
+    `exec` makes sh look for a `cd` binary, fail 127, and kill the pane the
+    moment the user acknowledges the warning — Claude never starts."""
+    calls = []
+    monkeypatch.setattr(
+        tmux,
+        "respawn_pane",
+        lambda pane_id, *, command: calls.append((pane_id, command)),
+    )
+    real_exec_cmd = "cd /repo/.worktrees/feat/x && exec claude"
+    startup.hold_pane_then_exec("%7", paths.spawn_log("@1"), real_exec_cmd)
+    _, cmd = calls[0]
+    assert "exec cd" not in cmd
+    assert cmd.rstrip("'").endswith(real_exec_cmd)
