@@ -217,6 +217,40 @@ def is_window_pinned(window_id: str) -> bool:
     return r.stdout.strip() == "1"
 
 
+_prefix_label_cached: str | None = None
+
+
+def prefix_label() -> str:
+    """Human-readable name of the current prefix key, for hint strings.
+
+    Read from the live server so a `local.conf` prefix override shows up in
+    overview footers and recovery hints. Cached for the process lifetime
+    (same module-global idiom as theme.get_palette; reset_prefix_cache
+    clears it between tests)."""
+    global _prefix_label_cached
+    if _prefix_label_cached is None:
+        _prefix_label_cached = _load_prefix_label()
+    return _prefix_label_cached
+
+
+def _load_prefix_label() -> str:
+    """Uncached read; falls back to the shipped default when the server is
+    unreachable (tests, outside tmux) or the option is unreadable."""
+    try:
+        r = _run(["show-options", "-gv", "prefix"])
+    except OSError:
+        return "Ctrl-Space"
+    key = r.stdout.strip()
+    if r.returncode != 0 or not key:
+        return "Ctrl-Space"
+    return key.replace("C-", "Ctrl-", 1).replace("M-", "Alt-", 1)
+
+
+def reset_prefix_cache() -> None:
+    global _prefix_label_cached
+    _prefix_label_cached = None
+
+
 def run_shell_bg(command: str) -> None:
     """Run `command` detached on the tmux server via `run-shell -b`.
 

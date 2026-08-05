@@ -285,12 +285,21 @@ def activate_target(target: Cursor, folds: dict[str, bool]) -> Cursor:
 
 # ===== Curses TUI: rendering =====
 
-# Action keys are reached through the tmux prefix (Ctrl-Space). Footers spell
-# the full chord so users who don't yet know the prefix can discover it; the
-# bare keys also work while the overview pane itself is focused.
-_PREFIX = "Ctrl-Space"
-_FOOTER_FULL = f"↑↓ select  ↵ open  {_PREFIX}: N new  K kill  R restore  E rename"
-_FOOTER_SHORT = f"{_PREFIX} N/K/R/E"
+# Action keys are reached through the tmux prefix. Footers spell the full
+# chord so users who don't yet know the prefix can discover it; the bare keys
+# also work while the overview pane itself is focused. The prefix name comes
+# from the server (tmux.prefix_label — process-cached) so a local.conf
+# override shows up here. Old uppercase keys remain silent aliases.
+
+
+def _footer_full() -> str:
+    return (
+        f"↑↓ select  ↵ open  {tmux.prefix_label()}: a new  k kill  r restore  e rename"
+    )
+
+
+def _footer_short() -> str:
+    return f"{tmux.prefix_label()} a/k/r/e"
 
 
 def _errored_count(rows: list[Row]) -> int:
@@ -299,7 +308,7 @@ def _errored_count(rows: list[Row]) -> int:
 
 def _restore_alert(n: int) -> str:
     plural = "" if n == 1 else "s"
-    return f"⚠ {n} agent{plural} down — press {_PREFIX} R to restore"
+    return f"⚠ {n} agent{plural} down — press {tmux.prefix_label()} r to restore"
 
 
 # State-color pair allocations. Inactive rows use the state fg on the
@@ -318,10 +327,11 @@ _PAIR_ACTIVE = {code: i + 1 + len(_STATE_CODES) for i, code in enumerate(_STATE_
 
 
 def _footer_for_width(width: int) -> str:
-    if width >= len(_FOOTER_FULL) + 2:
-        return _FOOTER_FULL
-    if width >= len(_FOOTER_SHORT) + 2:
-        return _FOOTER_SHORT
+    full, short = _footer_full(), _footer_short()
+    if width >= len(full) + 2:
+        return full
+    if width >= len(short) + 2:
+        return short
     return ""
 
 
@@ -568,7 +578,8 @@ def _refresh_after_activation(state: TuiState) -> None:
 def handle_key(state: TuiState, ch: int) -> None:
     """Apply a non-mouse keypress to the state. KEY_RESIZE is a no-op the
     caller filters out (next iteration redraws). Unknown keys are silently
-    ignored."""
+    ignored. Action keys (a/k/r/e for new/kill/restore/rename) work both
+    lowercase and as uppercase aliases (N/K/R/E)."""
     if ch == curses.KEY_UP:
         state.cursor = move_cursor(state.rows, state.cursor, -1)
     elif ch == curses.KEY_DOWN:
@@ -577,13 +588,13 @@ def handle_key(state: TuiState, ch: int) -> None:
         if state.cursor is not None:
             state.cursor = activate_target(state.cursor, state.folds)
             _refresh_after_activation(state)
-    elif ch == ord("N"):
+    elif ch in (ord("a"), ord("N")):
         spawn_new_agent()
-    elif ch == ord("K"):
+    elif ch in (ord("k"), ord("K")):
         kill_at(state.cursor)
-    elif ch == ord("R"):
+    elif ch in (ord("r"), ord("R")):
         restore_dead()
-    elif ch == ord("E"):
+    elif ch in (ord("e"), ord("E")):
         rename_at(state.cursor)
 
 

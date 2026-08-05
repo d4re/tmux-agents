@@ -3,7 +3,17 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
+from tmux_agents import tmux
+
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _reset_prefix_label_cache():
+    """prefix_label is process-cached; never let one test's value leak."""
+    tmux.reset_prefix_cache()
+    yield
+    tmux.reset_prefix_cache()
 
 
 @pytest.fixture(autouse=True)

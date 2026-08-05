@@ -4,7 +4,7 @@ Pops a shell rooted at the active agent's worktree — host projects do
 `chdir` + `exec $SHELL -il`; container/devcontainer projects exec into
 `docker exec -it -u <user> -w <workdir> <container> bash -il` with the
 same env forwarding (TERM, COLORTERM, TMUX_PANE, optional
-SSH_AUTH_SOCK) Claude uses inside the agent pane. Bound to `Ctrl-Space T`
+SSH_AUTH_SOCK) Claude uses inside the agent pane. Bound to `prefix + t`
 via `display-popup -E` so the popup closes when the shell exits.
 """
 

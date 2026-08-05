@@ -138,7 +138,7 @@ def _provision(
             f"\n  agent-new failed for {label}\n  reason: {reason}\n\n"
             "  Fix the underlying issue (e.g. start Docker), then re-run:\n"
             f"    agent-new {new_args}\n\n"
-            "  Or remove this window with Ctrl-Space K.\n\n"
+            f"  Or remove this window with {tmux.prefix_label()} k.\n\n"
         )
         startup.show_static_text(full_pane, body)
         if worktree_path is not None:

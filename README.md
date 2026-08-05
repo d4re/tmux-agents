@@ -196,7 +196,7 @@ even if your template references the env var.
 - Unified log: `$TMUX_AGENTS_STATE_DIR/tmux-agents.log` (default `/tmp/tmux-agents/tmux-agents.log`); pump entries are tagged with the container name in the `[component]` field.
 - Live pump processes: `ps -ef | grep tmux-agents-ssh-pump`.
 - Inside the container: `ls -la /tmp/tmux-agents-ssh.sock` to confirm the relay bound.
-- Container restart breaks the channel; `Ctrl-Space B` (rebuild) recreates the container and brings the agents back, or recreate a single agent with `Ctrl-Space K` then `Ctrl-Space N`.
+- Container restart breaks the channel; `Ctrl-Space b` (rebuild) recreates the container and brings the agents back, or recreate a single agent with `Ctrl-Space k` then `Ctrl-Space a`.
 
 ## Daily use
 
@@ -211,18 +211,20 @@ Cheat sheet:
 
 | Keys                | Action                                           |
 |---------------------|--------------------------------------------------|
-| `Ctrl-Space N`      | New agent — prompts for `<project> [branch]`     |
-| `Ctrl-Space R`      | Restore dead agent panes (revives every window whose Claude pane died) |
-| `Ctrl-Space B`      | Rebuild a project's container and resume its agents (warns first if any are busy) |
-| `Ctrl-Space E`      | Rename current window's branch part              |
+| `Ctrl-Space a`      | New agent — prompts for `<project> [branch]`     |
+| `Ctrl-Space k`      | Kill agent — picker for window + worktree removal |
+| `Ctrl-Space r`      | Restore dead agent panes (revives every window whose Claude pane died) |
+| `Ctrl-Space b`      | Rebuild a project's container and resume its agents (warns first if any are busy) |
+| `Ctrl-Space e`      | Rename current window's branch part              |
 | `Ctrl-Space L`      | Toggle layout: split (vertical) ↔ compact (horizontal) |
-| `Ctrl-Space V`      | Open the current agent's worktree in VS Code     |
-| `Ctrl-Space T`      | Open a shell in the current agent's worktree (popup) |
+| `Ctrl-Space v`      | Open the current agent's worktree in VS Code     |
+| `Ctrl-Space t`      | Open a shell in the current agent's worktree (popup) |
 | `Ctrl-Space <num>`  | Jump to window by number (shown in overview)     |
 | `Ctrl-Space w`      | Arrow-key window picker (`choose-tree`)          |
 | `Ctrl-Space z`      | Zoom/unzoom the focused pane                     |
 | `Ctrl-Space 0`      | Jump to the `ctrl` (host shell) window           |
 | `Ctrl-Space d`      | Detach (session keeps running)                   |
+| `Ctrl-Space <old uppercase>` | The pre-lowercase keys (`N K B R E V T`) still work as aliases |
 
 ### Restore across server restarts
 
@@ -248,14 +250,42 @@ exactly where it left off.
 
 When an agent's Claude pane dies, the overview shows `X` for that window
 and its footer turns into a recovery hint (`⚠ N agent(s) down — press
-Ctrl-Space R to restore`). `Ctrl-Space R` (or `R` in the overview) re-runs
+Ctrl-Space r to restore`). `Ctrl-Space r` (or `r` in the overview) re-runs
 `agent-restore` to revive every dead pane; it's idempotent, so live
 windows are left alone.
 
 If something fails (e.g., Docker not running), the broken window
 displays a clear error message and the overview shows `X` for it; fix
-the underlying issue and re-run `agent-restore` (`Ctrl-Space R`), or kill
-the window with Ctrl-Space K.
+the underlying issue and re-run `agent-restore` (`Ctrl-Space r`), or kill
+the window with Ctrl-Space k.
+
+## Customizing keys
+
+`agents.conf` sources `~/.config/tmux-agents/local.conf` as its last step
+(silently skipped if absent). tmux config is last-write-wins, so anything
+you put there overrides the shipped defaults, and it is never touched by
+`install.sh` or `make conf-sync`. All command keys live in the prefix
+table, so they keep working under whatever prefix you choose.
+
+Example — move the prefix to Alt-Space (useful if Ctrl sits on different
+physical keys on your machines, e.g. an OS-level Ctrl/Cmd swap on macOS):
+
+```tmux
+# ~/.config/tmux-agents/local.conf
+unbind C-Space
+set -g prefix M-Space
+bind M-Space send-prefix
+```
+
+Alt-Space needs two one-time terminal settings:
+
+- **macOS Terminal.app**: Settings → Profiles → Keyboard → check
+  "Use Option as Meta key".
+- **Windows Terminal**: unbind `alt+space` from the window system menu —
+  in `settings.json`: `{ "command": "unbound", "keys": "alt+space" }`.
+
+The overview footer and recovery hints read the prefix from the server,
+so they display your override, not the default.
 
 ## Copy / paste
 
@@ -309,14 +339,15 @@ In the split layout, the bottom overview pane is interactive:
   the overview pane.
 - With the overview pane focused: `↑` / `↓` walk visible rows, `↵`
   activates (window-switch on agent row, fold-toggle on header), and
-  `N` / `K` / `R` / `E` mirror the prefix bindings (new / kill / restore /
-  rename) — `N`, `K`, `E` act on the cursor's agent; `R` restores all dead
-  panes.
+  `a` / `k` / `r` / `e` mirror the prefix bindings (new / kill / restore /
+  rename) — `a`, `k`, `e` act on the cursor's agent; `r` restores all dead
+  panes. The old uppercase keys still work.
 
 A dim hint at the bottom-right of the pane shows the available keys, spelled
-as the full `Ctrl-Space` chord so the prefix is discoverable. When an agent
-pane is dead this is replaced by a recovery alert (`⚠ N agent(s) down — press
-Ctrl-Space R to restore`) in the errored color.
+as the full prefix chord (your `local.conf` prefix override is reflected
+here) so the prefix is discoverable. When an agent pane is dead this is
+replaced by a recovery alert (`⚠ N agent(s) down — press Ctrl-Space r to
+restore`) in the errored color.
 
 ## Developer notes
 

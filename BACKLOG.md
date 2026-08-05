@@ -87,3 +87,11 @@ Only `bg-shell` and the `subagent` backstop are genuine heuristics — the
 rest derive real values (wakeup `scheduledFor`, one-shot cron next-fire via
 croniter, recurring cron 7-day expiry), so the knobs that most warrant
 tuning are `BG_SHELL_TTL` and `SUBAGENT_TTL`.
+
+## Layout breaks on terminal resize
+
+Resizing the outer terminal can leave the split layout wrong (user report,
+2026-08-05: layout toggle is essentially only needed after a resize broke
+things). Investigate whether a `client-resized` hook re-running
+`agent-layout`'s split logic would keep panes proportional, and whether
+that plays nicely with the compact layout's status-line overview.
