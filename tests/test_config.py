@@ -12,12 +12,14 @@ def _write(tmp_path, body: str, *, name="p.toml") -> Path:
 
 # Default templates assembled by config.load() for container projects.
 DEFAULT_CONTAINER_EXEC = (
-    "docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -u vscode {container} "
+    "docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -e TMUX_AGENTS_AGENT=1 "
+    "-u vscode {container} "
     "bash -lc 'export SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock && "
     "cd {workdir} && exec claude{resume_args}'"
 )
 DEFAULT_CONTAINER_EXEC_NO_SSH = (
-    "docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -u vscode {container} "
+    "docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -e TMUX_AGENTS_AGENT=1 "
+    "-u vscode {container} "
     "bash -lc 'cd {workdir} && exec claude{resume_args}'"
 )
 DEFAULT_UP_CMD = "cd {repo} && devcontainer up --workspace-folder ."
@@ -119,7 +121,7 @@ DEFAULT_CASES = [
     # Host-only: gets the bare claude template, no up_cmd.
     (
         '[scripts]\nrepo = "/x/scripts"\n',
-        "cd {workdir} && exec claude{resume_args}",
+        "cd {workdir} && TMUX_AGENTS_AGENT=1 exec claude{resume_args}",
         None,
     ),
     # devcontainer=true: full template + default up.
@@ -384,3 +386,89 @@ def test_read_code_path_defaults_when_key_missing(tmp_path):
 
 def test_read_code_path_defaults_when_file_missing(tmp_path):
     assert config.read_code_path(tmp_path / "nope.toml") == config.DEFAULT_CODE_PATH
+
+
+# ---------------------------------------------------------------------------
+# agent kind: default_agent / per-project agent / codex_exec_cmd
+# ---------------------------------------------------------------------------
+
+
+def _load_one(tmp_path, body: str, name: str = "proj"):
+    p = tmp_path / "projects.toml"
+    p.write_text(body)
+    return config.load(p)[name]
+
+
+def test_agent_defaults_to_claude(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\n')
+    assert proj.agent == "claude"
+
+
+def test_global_default_agent(tmp_path):
+    proj = _load_one(tmp_path, 'default_agent = "codex"\n[proj]\nrepo = "/r"\n')
+    assert proj.agent == "codex"
+
+
+def test_project_agent_overrides_global(tmp_path):
+    proj = _load_one(
+        tmp_path, 'default_agent = "codex"\n[proj]\nrepo = "/r"\nagent = "claude"\n'
+    )
+    assert proj.agent == "claude"
+
+
+def test_invalid_agent_value_raises(tmp_path):
+    p = tmp_path / "projects.toml"
+    p.write_text('[proj]\nrepo = "/r"\nagent = "gemini"\n')
+    with pytest.raises(config.ConfigError):
+        config.load(p)
+
+
+def test_invalid_default_agent_raises(tmp_path):
+    p = tmp_path / "projects.toml"
+    p.write_text('default_agent = "gemini"\n[proj]\nrepo = "/r"\n')
+    with pytest.raises(config.ConfigError):
+        config.load(p)
+
+
+def test_default_codex_exec_cmd_host_only(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\n')
+    assert proj.codex_exec_cmd == (
+        "cd {workdir} && TMUX_AGENTS_AGENT=1 exec codex{resume_args}"
+    )
+
+
+def test_default_exec_cmds_carry_launch_marker(tmp_path):
+    host = _load_one(tmp_path, '[proj]\nrepo = "/r"\n')
+    cont = _load_one(tmp_path, '[proj]\nrepo = "/r"\ndevcontainer = true\n')
+    assert "TMUX_AGENTS_AGENT=1" in host.exec_cmd
+    assert "-e TMUX_AGENTS_AGENT=1" in cont.exec_cmd
+    assert "-e TMUX_AGENTS_AGENT=1" in cont.codex_exec_cmd
+
+
+def test_custom_codex_exec_cmd_preserved(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\ncodex_exec_cmd = "my-codex"\n')
+    assert proj.codex_exec_cmd == "my-codex"
+
+
+def test_exec_cmd_for(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\n')
+    assert proj.exec_cmd_for("claude") == proj.exec_cmd
+    assert proj.exec_cmd_for("codex") == proj.codex_exec_cmd
+
+
+def test_exec_cmd_explicit_flags_default_false(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\n')
+    assert proj.exec_cmd_explicit is False
+    assert proj.codex_exec_cmd_explicit is False
+
+
+def test_exec_cmd_explicit_flag_true_when_set(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\nexec_cmd = "my-claude"\n')
+    assert proj.exec_cmd_explicit is True
+    assert proj.codex_exec_cmd_explicit is False
+
+
+def test_codex_exec_cmd_explicit_flag_true_when_set(tmp_path):
+    proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\ncodex_exec_cmd = "my-codex"\n')
+    assert proj.exec_cmd_explicit is False
+    assert proj.codex_exec_cmd_explicit is True
