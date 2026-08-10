@@ -3,6 +3,34 @@ from tmux_agents.commands import layout
 from tmux_agents import tmux, paths
 
 
+def test_layout_split_to_compact_kills_overview_panes_by_role(
+    monkeypatch, tmp_state_dir
+):
+    """Compact layout kills panes with @role=overview, not by index."""
+    (tmp_state_dir / "layout").write_text("split")
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:x"),
+        ],
+    )
+    monkeypatch.setattr(
+        tmux,
+        "list_panes",
+        lambda w: [
+            tmux.Pane(id="%1", index=0, role=""),
+            tmux.Pane(id="%2", index=1, role="overview"),
+            tmux.Pane(id="%3", index=2, role=""),
+        ],
+    )
+    killed_panes = []
+    monkeypatch.setattr(tmux, "kill_pane", lambda pid: killed_panes.append(pid))
+    layout.main([])
+    assert paths.layout_file().read_text() == "compact"
+    assert killed_panes == ["%2"]  # only the overview pane
+
+
 def test_layout_split_to_compact_kills_bottom_panes(monkeypatch, tmp_state_dir):
     (tmp_state_dir / "layout").write_text("split")
     monkeypatch.setattr(
@@ -16,15 +44,15 @@ def test_layout_split_to_compact_kills_bottom_panes(monkeypatch, tmp_state_dir):
         tmux,
         "list_panes",
         lambda w: [
-            tmux.Pane(id="%1", index=0),
-            tmux.Pane(id="%2", index=1),
+            tmux.Pane(id="%1", index=0, role=""),
+            tmux.Pane(id="%2", index=1, role="overview"),
         ],
     )
     killed_panes = []
     monkeypatch.setattr(tmux, "kill_pane", lambda pid: killed_panes.append(pid))
     layout.main([])
     assert paths.layout_file().read_text() == "compact"
-    assert killed_panes == ["%2"]  # the non-zero pane index = overview pane
+    assert killed_panes == ["%2"]  # the overview pane
 
 
 def test_attach_overview_pane_splits_and_tags(monkeypatch):
@@ -35,7 +63,9 @@ def test_attach_overview_pane_splits_and_tags(monkeypatch):
     monkeypatch.setattr(
         tmux,
         "split_window",
-        lambda w, *, percent, command: splits.append((w, percent, command)) or "%9",
+        lambda w, *, percent, command, **kw: (
+            splits.append((w, percent, command)) or "%9"
+        ),
     )
     tagged = []
     monkeypatch.setattr(tmux, "set_pane_option", lambda *args: tagged.append(args))
