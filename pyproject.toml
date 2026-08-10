@@ -32,6 +32,7 @@ agent-layout               = "tmux_agents.commands.layout:main"
 agent-restore              = "tmux_agents.commands.restore:main"
 agent-vscode               = "tmux_agents.commands.vscode:main"
 agent-terminal             = "tmux_agents.commands.terminal:main"
+agent-other                = "tmux_agents.commands.other:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -40,6 +41,7 @@ where = ["src"]
 tmux_agents = [
     "hooks/agents.json",
     "hooks/write-state.sh",
+    "hooks/codex-hook.sh",
     "_ssh_framing.py",
     "_ssh_relay_script.py",
     "_ssh_pump_script.py",
