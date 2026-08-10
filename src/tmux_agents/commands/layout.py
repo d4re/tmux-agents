@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if target == "compact":
             for pane in tmux.list_panes(win.id):
-                if pane.index != 0:
+                if pane.role == "overview":
                     tmux.kill_pane(pane.id)
         else:
             overview.attach_overview_pane(win.id)

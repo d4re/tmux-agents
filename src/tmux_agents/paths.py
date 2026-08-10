@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,18 @@ def windows_dir() -> Path:
 
 def window_mapping_file(window_id: str) -> Path:
     return windows_dir() / f"{window_id}.json"
+
+
+def window_mapping_lock(window_id: str) -> Path:
+    # Stable sibling — never lock the JSON itself: atomic rename replaces
+    # its inode, which would let a second locker in.
+    return windows_dir() / f"{window_id}.json.lock"
+
+
+def worktree_cleanup_lock(worktree: Path) -> Path:
+    """Guards destructive per-pane cleanup/scrubbing and slot-liveness
+    publication for this worktree (NOT the hooks' own writes)."""
+    return worktree / ".local" / ".tmux-agents" / ".cleanup.lock"
 
 
 def worktree_state_file(worktree: Path, pane_id: str) -> Path:
@@ -109,12 +122,19 @@ def atomic_write_json(
     indent: int | None = None,
     sort_keys: bool = False,
 ) -> None:
-    """Atomically write `data` as JSON to `path` via a sibling `.tmp` rename.
-    Creates the parent directory. Trailing newline only when indented."""
+    """Atomically write `data` as JSON to `path` via a temp file with a unique
+    name. Creates the parent directory. Trailing newline only when indented.
+    Preserves umask-based file permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
     text = json.dumps(data, indent=indent, sort_keys=sort_keys)
     if indent is not None:
         text += "\n"
-    tmp.write_text(text)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    tmp = Path(tmp_name)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    # Restore umask-based permissions (mkstemp creates 0600)
+    um = os.umask(0)
+    os.umask(um)
+    os.chmod(tmp, 0o666 & ~um)
     tmp.replace(path)

@@ -77,6 +77,43 @@ of each other in the same container; queueing at `accept(1)` makes
 this rare. Fix: wait for the peer-sentinel round-trip before
 `splice()` returns, or allocate a fresh per-op pipe pair so the
 leftover thread is forcibly EOF'd.
+## Per-agent context/token telemetry in the overview
+
+marmonitor and codex-hud show that context-remaining and token usage are
+readable from Claude/Codex on-disk session files (Claude project JSONL
+transcripts; Codex `~/.codex` rollout JSONL). Since hooks already capture
+each pane's `session_id`, we know the exact file — none of the
+process-to-session binding fragility those tools fight. A "context 73%"
+column in the overview would be genuinely useful with 6 agents. Poll cost:
+one file stat/tail per pane per tick (or on a slower cadence).
+
+## On-state-change user hook
+
+ccmanager fires a user-configured command on session state transitions
+(e.g. desktop notification when an agent flips to `W`). The state tick
+already computes transitions (the tick.cache fingerprint); exposing an
+optional `on_state_change` command (projects.toml top-level) that runs
+with old/new letter + window name as args would be cheap.
+
+## Bell/sound on turn-complete
+
+tmux-agent-status plays a sound when an agent finishes a turn. We already
+`printf '\a'` on permission prompts; an opt-in bell (or command) on
+`Stop` → idle would let the user look away from the screen entirely.
+
+## Agent-launch marker for Claude hooks (`write-state.sh`)
+
+The Codex hook script (codex-support spec) requires `TMUX_AGENTS_AGENT=1`
+in the environment so a manual `codex` run inside `agent-terminal`
+(`Ctrl-Space T`) — which deliberately propagates `TMUX_PANE` and sits in
+the worktree — can't write phases under the focused agent pane or
+overwrite its session pin. The same latent exposure exists for a manual
+`claude` run in that popup: worktree hooks key off `TMUX_PANE` alone.
+Extending the marker to `write-state.sh` closes it, but existing live
+panes were spawned without the variable and would go dark until
+respawned — needs a migration story (e.g. gate only when the variable
+is *present but not "1"*, then flip to hard-require a release later).
+
 ## Config-tunable registry TTLs
 
 `tmux_agents/registry.py` hardcodes `WAKEUP_GRACE`, `CRON_ONESHOT_GRACE`,

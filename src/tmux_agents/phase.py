@@ -15,6 +15,18 @@ IDLE = "idle"
 STARTING = "starting"
 ERRORED = "errored"
 
+# Display-letter priority, highest first, for combining multiple live agent
+# slots in one window into a single window-level color.
+PRIORITY = "XWRBZIS"
+
+
+def combined_letter(letters: list[str]) -> str:
+    """Highest-priority display letter across a window's live slots. Empty
+    (no live slots) defaults to IDLE."""
+    if not letters:
+        return state.IDLE
+    return min(letters, key=PRIORITY.index)
+
 
 def derive_letter(phase: str, *, b_count: int, z_count: int, pane_alive: bool) -> str:
     """Priority: X > W > R > B > Z > I > S. Pane death and explicit `errored`

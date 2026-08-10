@@ -8,7 +8,7 @@ hold, or error) is correct.  All tests use the _provision_env helper + the
 
 import os
 
-from tmux_agents import container, provisioning, ssh_forward, worktree
+from tmux_agents import codex_hooks, container, provisioning, ssh_forward, worktree
 from tmux_agents import startup, phase
 from tmux_agents import windows as windows_mod
 from tmux_agents.commands import new
@@ -61,6 +61,8 @@ def _provision_env_prog(
         return PumpResult("ready")
 
     monkeypatch.setattr(ssh_forward, "maybe_spawn_pump", fake_pump)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
+    monkeypatch.setattr(codex_hooks, "ensure_host", lambda: True)
 
     if fail_worktree:
 
@@ -189,6 +191,7 @@ def test_warm_start_emits_skip_lines(
     )
     monkeypatch.setattr(worktree, "resolve", lambda r, b, **k: r / ".worktrees" / b)
     monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     cap = SimpleNamespace(respawns=[], static_texts=[], holds=[], states=[])
     monkeypatch.setattr(
         startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))

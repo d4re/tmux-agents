@@ -21,9 +21,15 @@ def _auto_isolate_paths(tmp_path, monkeypatch):
     """Default both config and state dirs to per-test tmp paths so no test can
     accidentally read or write the real `~/.config/tmux-agents/` or
     `/tmp/tmux-agents/`. Tests that need explicit dirs override via
-    `tmp_config_dir` / `tmp_state_dir` (those still take precedence)."""
+    `tmp_config_dir` / `tmp_state_dir` (those still take precedence).
+
+    Also isolates `~/.codex/` (codex_hooks.codex_home()) the same way — any
+    test that runs `agent-new`/`agent-other`'s real (unstubbed)
+    `codex_hooks.ensure_host()` would otherwise write to the real user's
+    `~/.codex/hooks.json`."""
     monkeypatch.setenv("TMUX_AGENTS_CONFIG_DIR", str(tmp_path / "_default_config"))
     monkeypatch.setenv("TMUX_AGENTS_STATE_DIR", str(tmp_path / "_default_state"))
+    monkeypatch.setenv("TMUX_AGENTS_CODEX_HOME", str(tmp_path / "_default_codex_home"))
 
 
 @pytest.fixture
@@ -137,7 +143,7 @@ def agent_new_env(monkeypatch, tmp_state_dir):
     monkeypatch.setattr(
         tmux,
         "split_window",
-        lambda w, *, percent, command: (
+        lambda w, *, percent, command, **kw: (
             captured.splits.append((w, percent, command)) or "%6"
         ),
     )

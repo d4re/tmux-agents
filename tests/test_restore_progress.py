@@ -124,8 +124,8 @@ def test_container_failure_fails_entries_and_deletes_logs(
     failed = []
     monkeypatch.setattr(
         restore,
-        "_mark_entry_failed",
-        lambda e, ph, reason: failed.append((e.window_id, reason)),
+        "_mark_pane_failed",
+        lambda e, pane_id_full, reason: failed.append((e.window_id, reason)),
     )
 
     restore.execute_plan([e], placeholders, {"backend": _project()})

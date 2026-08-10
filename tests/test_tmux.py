@@ -258,3 +258,30 @@ def test_prefix_label_falls_back_when_tmux_binary_missing(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert tmux.prefix_label() == "Ctrl-Space"
+
+
+def test_split_window_horizontal_argv(monkeypatch):
+    seen = {}
+
+    def fake_run(args, *, check=False):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout="%5\n", stderr="")
+
+    monkeypatch.setattr(tmux, "_run", fake_run)
+    tmux.split_window("%1", percent=50, command="c", horizontal=True)
+    assert seen["args"][:2] == ["split-window", "-h"]
+    assert "-f" not in seen["args"]
+
+
+def test_split_window_full_size_vertical_argv(monkeypatch):
+    seen = {}
+
+    def fake_run(args, *, check=False):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout="%5\n", stderr="")
+
+    monkeypatch.setattr(tmux, "_run", fake_run)
+    tmux.split_window("@1", percent=25, command="c", full_size=True)
+    assert seen["args"][:2] == ["split-window", "-v"]
+    assert "-f" in seen["args"]
+    assert seen["args"][-1] == "c"

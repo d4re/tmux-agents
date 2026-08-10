@@ -3,10 +3,29 @@ from types import SimpleNamespace
 
 import pytest
 
-from tmux_agents import phase, pickers, ssh_forward, startup, tmux, container
+from tmux_agents import (
+    codex_hooks,
+    phase,
+    pickers,
+    ssh_forward,
+    startup,
+    tmux,
+    container,
+)
 from tmux_agents import windows as windows_mod
 from tmux_agents.commands import rebuild
 from tmux_agents.config import Project
+
+
+@pytest.fixture(autouse=True)
+def _stub_codex_hooks(monkeypatch):
+    """Default-stub codex_hooks so existing rebuild tests (which don't
+    exercise codex-hook provisioning) don't perform real filesystem I/O,
+    even against the conftest-isolated TMUX_AGENTS_CODEX_HOME. Tests that
+    specifically exercise the ensure-provisioned call override this via
+    their own `monkeypatch.setattr` later in the test body."""
+    monkeypatch.setattr(codex_hooks, "ensure_host", lambda: True)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
 
 
 def _proj(
@@ -44,6 +63,7 @@ def _affected(
     letter="I",
     session_id=None,
     host_worktree="/wt",
+    busy=None,
 ):
     m = windows_mod.WindowMapping(
         window_id="@7",
@@ -53,8 +73,10 @@ def _affected(
         pane_id=pane_id,
         claude_session_id=session_id,
     )
+    if busy is None:
+        busy = letter in rebuild.BUSY_LETTERS
     return rebuild.Affected(
-        mapping=m, window_name=f"{project}:{branch}", state_letter=letter
+        mapping=m, window_name=f"{project}:{branch}", state_letter=letter, busy=busy
     )
 
 
@@ -123,6 +145,54 @@ def test_gather_affected_groups_and_skips(monkeypatch, tmp_config_dir):
     assert set(by) == {"webapp", "api"}
     assert {a.state_letter for a in by["webapp"]} == {"R", "B"}
     assert by["api"][0].state_letter == "I"  # empty state_code → idle letter
+
+
+def test_gather_affected_busy_true_when_any_slot_letter_is_busy(monkeypatch):
+    """A dual-slot window's busy flag must be true when ANY parsed slot
+    letter is in BUSY_LETTERS — not just the combined (highest-priority)
+    display letter. `I|R` (idle default + running secondary) must count as
+    busy even though it's a mundane case where the combined letter (R)
+    already happens to be busy too."""
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@1",
+            project="webapp",
+            branch="a",
+            host_worktree=Path("/wt"),
+            pane_id="9",
+        )
+    )
+    wins = [
+        tmux.Window(id="@1", index=1, name="webapp:a", state_code="I|R"),
+    ]
+    by = rebuild._gather_affected(wins)
+    assert by["webapp"][0].busy is True
+
+
+def test_gather_affected_busy_true_even_when_combined_letter_is_not_busy(
+    monkeypatch,
+):
+    """Regression guard: `combined_letter` picks the highest-*priority*
+    letter (X > W > R > B > Z > I > S), not the "most urgent for the
+    rebuild-busy check" letter. A window with an errored default slot (X)
+    and a running secondary slot (R) combines to "X" for display — X is
+    NOT in BUSY_LETTERS — but the window still has a genuinely busy live
+    agent and must be flagged busy."""
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@1",
+            project="webapp",
+            branch="a",
+            host_worktree=Path("/wt"),
+            pane_id="9",
+        )
+    )
+    wins = [
+        tmux.Window(id="@1", index=1, name="webapp:a", state_code="X|R"),
+    ]
+    by = rebuild._gather_affected(wins)
+    assert by["webapp"][0].state_letter == "X"
+    assert by["webapp"][0].busy is True
 
 
 def test_picker_line_tally_and_empty():
@@ -249,6 +319,131 @@ def test_worker_isolates_a_failing_respawn(monkeypatch, tmp_state_dir):
     affected = [_affected(pane_id="23", session_id="s"), _affected(pane_id="24")]
 
     assert rebuild._run_worker(proj, affected, no_cache=False) == 1  # one failure
+
+
+def test_worker_respawns_every_live_slot_kind_matched(monkeypatch, tmp_state_dir):
+    """A dual-slot window (a claude default + a codex secondary side-by-side
+    in the same window) must have BOTH panes re-execed after the container
+    rebuild, each built from its own slot's kind template — not just the
+    window's default slot."""
+    io = _stub_worker_io(monkeypatch)
+    monkeypatch.setattr(container, "rebuild", lambda proj, *, up_cmd, no_cache: "cid")
+    proj = Project(
+        name="webapp",
+        repo=Path("/Users/me/dev/webapp"),
+        exec_cmd="claude{resume_args}",
+        codex_exec_cmd="codex{resume_args}",
+        devcontainer=True,
+        up_cmd="devcontainer up",
+        up_cmd_explicit=True,
+    )
+    m = windows_mod.WindowMapping(
+        window_id="@7",
+        project="webapp",
+        branch="feat-x",
+        host_worktree=Path("/wt"),
+        pane_id="23",
+        agents=[
+            windows_mod.AgentSlot(kind="claude", pane_id="23", session_id="s1"),
+            windows_mod.AgentSlot(kind="codex", pane_id="24", session_id="s2"),
+        ],
+    )
+    affected = [
+        rebuild.Affected(
+            mapping=m, window_name="webapp:feat-x", state_letter="I", busy=False
+        )
+    ]
+
+    rc = rebuild._run_worker(proj, affected, no_cache=False)
+
+    assert rc == 0
+    final = io.respawns[-2:]
+    assert ("%23", "claude --resume s1") in final
+    assert ("%24", "codex resume s2") in final
+    assert io.states[-2:] == [("23", phase.STARTING), ("24", phase.STARTING)]
+
+
+def test_worker_skips_dead_secondary_slot(monkeypatch, tmp_state_dir):
+    """A secondary slot with `pane_id=None` (dead/never-started) must be
+    skipped entirely — no respawn attempted for a nonexistent pane."""
+    io = _stub_worker_io(monkeypatch)
+    monkeypatch.setattr(container, "rebuild", lambda proj, *, up_cmd, no_cache: "cid")
+    proj = _proj(devcontainer=True, up_cmd="devcontainer up")
+    m = windows_mod.WindowMapping(
+        window_id="@7",
+        project="webapp",
+        branch="feat-x",
+        host_worktree=Path("/wt"),
+        pane_id="23",
+        agents=[
+            windows_mod.AgentSlot(kind="claude", pane_id="23"),
+            windows_mod.AgentSlot(kind="codex", pane_id=None, session_id="s2"),
+        ],
+    )
+    affected = [
+        rebuild.Affected(
+            mapping=m, window_name="webapp:feat-x", state_letter="I", busy=False
+        )
+    ]
+
+    rc = rebuild._run_worker(proj, affected, no_cache=False)
+
+    assert rc == 0
+    panes_touched = {pane for pane, _ in io.respawns}
+    assert panes_touched == {"%23"}
+
+
+# ---- Task 16 fix: ensure-provisioned codex hooks after rebuild ----
+
+
+def test_worker_ensures_codex_hooks_after_rebuild(monkeypatch, tmp_state_dir):
+    """Section 2's cheap idempotent codex ensure-provisioned check must run
+    once after the container rebuild, before re-exec'ing panes —
+    `ensure_container(name, user)` for a container project (the only kind
+    `agent-rebuild` supports)."""
+    _stub_worker_io(monkeypatch)
+    monkeypatch.setattr(
+        container, "rebuild", lambda proj, *, up_cmd, no_cache: "cid-123"
+    )
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_container",
+        lambda name, user: calls.append((name, user)) or True,
+    )
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_host",
+        lambda: pytest.fail("must not be called for a container project"),
+    )
+    proj = _proj(devcontainer=True, up_cmd="devcontainer up")
+    affected = [_affected(pane_id="23")]
+
+    rc = rebuild._run_worker(proj, affected, no_cache=False)
+
+    assert rc == 0
+    assert calls == [("cid-123", "vscode")]
+
+
+def test_worker_codex_hooks_failure_is_nonfatal(monkeypatch, tmp_state_dir):
+    """A codex-hook ensure-provisioned failure during rebuild must not block
+    resuming the project's agents — mirroring `agent-new`'s non-fatal
+    `codex hooks` stage."""
+    io = _stub_worker_io(monkeypatch)
+    monkeypatch.setattr(container, "rebuild", lambda proj, *, up_cmd, no_cache: "cid")
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_container",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("codex boom")),
+    )
+    proj = _proj(devcontainer=True, up_cmd="devcontainer up")
+    affected = [_affected(pane_id="23", session_id="sess-1")]
+
+    rc = rebuild._run_worker(proj, affected, no_cache=False)
+
+    assert rc == 0
+    final = io.respawns[-1:]
+    assert ("%23", "claude --resume sess-1") in final
 
 
 # ---- CLI dispatch ----

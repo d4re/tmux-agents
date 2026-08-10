@@ -44,3 +44,25 @@ def test_derive_letter(phase_val, b_count, z_count, pane_alive, expected, commen
         )
         == expected
     )
+
+
+# (letters, expected, comment)
+COMBINED_CASES = [
+    ([state.IDLE, state.RUNNING], state.RUNNING, "running beats idle"),
+    ([state.WAITING, state.BACKGROUND], state.WAITING, "waiting beats background"),
+    ([state.ERRORED, state.RUNNING], state.ERRORED, "errored is highest priority"),
+    ([state.BACKGROUND, state.SLEEPING], state.BACKGROUND, "background beats sleeping"),
+    ([state.SLEEPING, state.IDLE], state.SLEEPING, "sleeping beats idle"),
+    ([state.IDLE, state.STARTING], state.IDLE, "idle beats starting"),
+    ([state.STARTING], state.STARTING, "single starting slot"),
+    ([], state.IDLE, "no live slots defaults to idle"),
+]
+
+
+@pytest.mark.parametrize(
+    "letters,expected,comment",
+    COMBINED_CASES,
+    ids=[c[-1] for c in COMBINED_CASES],
+)
+def test_combined_letter(letters, expected, comment):
+    assert phase.combined_letter(letters) == expected

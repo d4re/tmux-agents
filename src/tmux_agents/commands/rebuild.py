@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 
 from tmux_agents import (
+    codex_hooks,
     config,
     container,
     exec_cmd,
@@ -53,7 +54,13 @@ class Affected:
 
     mapping: windows_mod.WindowMapping
     window_name: str
-    state_letter: str
+    state_letter: str  # combined (highest-priority) letter, for display only
+    # True iff ANY live slot's letter is in BUSY_LETTERS. Not derivable from
+    # `state_letter` alone: `combined_letter` picks the highest-*priority*
+    # letter (X > W > R > B > Z > I > S), so an errored default slot (X)
+    # alongside a running secondary (R) combines to "X" for display even
+    # though the window has a genuinely busy agent in it.
+    busy: bool = False
 
 
 def _eligible(proj: config.Project) -> bool:
@@ -82,9 +89,11 @@ def _gather_affected(windows: list[tmux.Window]) -> dict[str, list[Affected]]:
         m = windows_mod.read_mapping(w.id)
         if m is None:
             continue
-        letter, _ = overview._parse_state_code(w.state_code)
+        codes = [s.code for s in overview.parse_state_code(w.state_code)]
+        letter = phase.combined_letter(codes)
+        busy = any(c in BUSY_LETTERS for c in codes)
         out.setdefault(m.project, []).append(
-            Affected(mapping=m, window_name=w.name, state_letter=letter)
+            Affected(mapping=m, window_name=w.name, state_letter=letter, busy=busy)
         )
     return out
 
@@ -134,7 +143,7 @@ def _print_warning(
             f"{n} {noun} in it (all idle/sleeping):"
         )
     for a in affected:
-        marker = "   ← busy" if a.state_letter in BUSY_LETTERS else ""
+        marker = "   ← busy" if a.busy else ""
         label = a.mapping.branch or a.window_name
         print(f"     {a.state_letter}  {label}{marker}")
     print(
@@ -146,7 +155,7 @@ def _print_warning(
 def _confirm(project: str, affected: list[Affected], *, assume_yes: bool) -> bool:
     if assume_yes:
         return True
-    busy = [a for a in affected if a.state_letter in BUSY_LETTERS]
+    busy = [a for a in affected if a.busy]
     _print_warning(project, affected, busy)
     try:
         return pickers.prompt_yes_no(f"rebuild {project}? ", default=not busy)
@@ -158,32 +167,52 @@ def _confirm(project: str, affected: list[Affected], *, assume_yes: bool) -> boo
 
 
 def _fail_pane(a: Affected, reason: str) -> None:
-    """Show the rebuild failure in the agent's pane and flip it to errored."""
+    """Show the rebuild failure in every one of the window's live agent
+    panes (not just the default slot) and flip each to errored."""
     body = (
         f"\n  agent-rebuild failed for {a.window_name}\n  reason: {reason}\n\n"
         "  Fix the underlying issue (e.g. start Docker), then re-run:\n"
         f"    agent-rebuild {a.mapping.project}\n\n"
     )
-    startup.show_static_text(f"%{a.mapping.pane_id}", body)
-    startup._write_pane_state(
-        a.mapping.host_worktree, a.mapping.pane_id, phase_value=phase.ERRORED
-    )
+    for slot in a.mapping.agents:
+        if slot.pane_id is None:
+            continue
+        startup.show_static_text(f"%{slot.pane_id}", body)
+        startup._write_pane_state(
+            a.mapping.host_worktree, slot.pane_id, phase_value=phase.ERRORED
+        )
+
+
+def _live_slots(
+    affected: list[Affected],
+) -> list[tuple[Affected, windows_mod.AgentSlot]]:
+    """Every (window, slot) pair across `affected` whose slot has a live
+    pane — flattens each window's `mapping.agents` list, skipping dead
+    (`pane_id is None`) secondary slots."""
+    return [
+        (a, slot)
+        for a in affected
+        for slot in a.mapping.agents
+        if slot.pane_id is not None
+    ]
 
 
 def _run_worker(
     proj: config.Project, affected: list[Affected], *, no_cache: bool
 ) -> int:
     """Detached: show progress in each pane, rebuild the container, respawn
-    the SSH pump, and re-exec each pane into Claude. Per-pane failures are
-    isolated; a container-rebuild failure marks every pane errored."""
+    the SSH pump, and re-exec every live agent slot's pane. Per-pane
+    failures are isolated; a container-rebuild failure marks every pane
+    errored."""
+    live = _live_slots(affected)
     # Show live build output where each agent used to be.
-    for a in affected:
+    for a, slot in live:
         startup._respawn_with_retry(
-            f"%{a.mapping.pane_id}",
+            f"%{slot.pane_id}",
             startup.placeholder_command(a.mapping.window_id),
         )
         startup._write_pane_state(
-            a.mapping.host_worktree, a.mapping.pane_id, phase_value=phase.STARTING
+            a.mapping.host_worktree, slot.pane_id, phase_value=phase.STARTING
         )
 
     files: dict[str, io.TextIOWrapper] = {}
@@ -219,6 +248,24 @@ def _run_worker(
             for a in affected:
                 _fail_pane(a, f"container rebuild failed: {ce}")
             return 1
+
+        # After the container rebuild, before re-exec'ing panes: cheap
+        # idempotent codex hook provisioning check, mirroring agent-new's
+        # Task 15 "codex hooks" stage. Non-fatal — a failure here must
+        # never block resuming the rebuilt project's agents.
+        with multi.stage("codex hooks") as st:
+            try:
+                if proj.is_container:
+                    codex_hooks.ensure_container(container_name, proj.user or "vscode")
+                else:
+                    codex_hooks.ensure_host()
+            except Exception as ex:
+                st.warn(f"could not provision codex hooks: {type(ex).__name__}: {ex}")
+                logger.warning(
+                    "%s: codex hook provisioning failed (non-fatal)",
+                    proj.name,
+                    exc_info=True,
+                )
     finally:
         for f in files.values():
             try:
@@ -228,31 +275,32 @@ def _run_worker(
         for a in affected:
             paths.spawn_log(a.mapping.window_id).unlink(missing_ok=True)
 
-    # Container is up; re-exec each pane into Claude, isolating failures.
+    # Container is up; re-exec every live slot's pane, isolating failures.
     failures = 0
-    for a in affected:
+    for a, slot in live:
         m = a.mapping
         try:
             cmd = exec_cmd.build(
                 proj,
                 branch=m.branch,
-                claude_session_id=m.claude_session_id,
+                session_id=slot.session_id,
                 container_name=container_name,
+                kind=slot.kind,
                 label=m.window_id,
             )
-            startup._respawn_with_retry(f"%{m.pane_id}", cmd)
+            startup._respawn_with_retry(f"%{slot.pane_id}", cmd)
             startup._write_pane_state(
-                m.host_worktree, m.pane_id, phase_value=phase.STARTING
+                m.host_worktree, slot.pane_id, phase_value=phase.STARTING
             )
-            logger.info("%s: respawned pane=%%%s", m.window_id, m.pane_id)
+            logger.info("%s: respawned pane=%%%s", m.window_id, slot.pane_id)
         except Exception as ex:
             failures += 1
             logger.error("%s: respawn failed: %s", m.window_id, ex, exc_info=True)
     logger.info(
-        "rebuilt %r; respawned %d/%d agent(s)",
+        "rebuilt %r; respawned %d/%d agent slot(s)",
         proj.name,
-        len(affected) - failures,
-        len(affected),
+        len(live) - failures,
+        len(live),
     )
     return 0 if failures == 0 else 1
 

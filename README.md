@@ -41,8 +41,9 @@ repo = "/Users/you/dev/scripts"
 
 Placeholders: `{repo}`, `{container}`, `{workdir}`, `{resume_args}`. For container projects
 `{workdir}` resolves inside the container; for host-only it resolves on the host.
-`{resume_args}` expands to empty for fresh agents and to ` --resume <session_id>` (leading
-space included) when `agent-restore` is reviving a previous Claude conversation.
+`{resume_args}` expands to empty for a fresh agent and to a resume snippet (leading space
+included) when reviving a previous conversation — ` --resume <session_id>` for Claude,
+` resume <session_id>` for Codex (Codex resumes via a subcommand, not a flag).
 
 `devcontainer = true` looks up the container by the `devcontainer.local_folder={repo}` label
 that VS Code's Dev Containers extension and the `devcontainer` CLI stamp on every container,
@@ -52,17 +53,134 @@ rebuilds. In this mode several fields take canonical defaults:
 - `container_workdir` → `/workspaces/<repo-basename>` (the tooling's mount path; override if
   your `devcontainer.json` sets a custom `workspaceFolder`).
 - `up_cmd` → `cd {repo} && devcontainer up --workspace-folder .`
-- `exec_cmd` → `docker exec -it -u vscode {container} bash -lc 'cd {workdir} && claude'`
+- `exec_cmd` → `docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -e TMUX_AGENTS_AGENT=1
+  -u vscode {container} bash -lc 'export SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock && cd {workdir}
+  && exec claude{resume_args}'` (the `SSH_AUTH_SOCK` export is only present when
+  `forward_ssh_agent` is on, the default — see "SSH agent forwarding" below).
 
 `-u vscode` matches the `remoteUser` set by most Microsoft Dev Containers feature-based
 templates (Python, Java, Kubernetes). If your image uses a different user — e.g. the Node
 template's `remoteUser: node` — override `exec_cmd` explicitly.
 
 For host-only projects, `exec_cmd` is now optional (defaults to
-`cd {workdir} && exec claude{resume_args}`). For container projects, it
-also has a default that uses `docker exec`. Override only if you need a
-custom invocation; if you do, include `{resume_args}` after `claude`
-to enable conversation resume on restore.
+`cd {workdir} && TMUX_AGENTS_AGENT=1 exec claude{resume_args}`). For container
+projects, it also has a default that uses `docker exec` (above). Override
+only if you need a custom invocation; if you do, include `{resume_args}`
+after `claude` to enable conversation resume on restore, and keep exporting
+`TMUX_AGENTS_AGENT=1` before the agent starts — Codex's hook script (below)
+refuses to write state without it, and a future custom `exec_cmd` losing it
+degrades silently to an untracked-but-functional pane rather than an error.
+
+### Running Codex alongside Claude
+
+Every project also has a **Codex** agent kind available as a second, optional
+agent in the same window/worktree — started on demand with `Ctrl-Space O`,
+not spawned automatically. Two keys control which agent is primary and which
+custom command launches the secondary:
+
+```toml
+# Global default (optional; "claude" if omitted)
+default_agent = "claude"
+
+[api]
+repo = "/Users/you/dev/api"
+container = "api-devcontainer"
+up_cmd = "cd {repo} && devcontainer up --workspace-folder ."
+# This project runs Codex as its PRIMARY agent instead of the global default.
+agent = "codex"
+# Optional override for the secondary/primary Codex launch command (same
+# placeholders as exec_cmd; defaults mirror exec_cmd's shape with `codex`
+# instead of `claude` and Codex's `resume <id>` subcommand spelling).
+codex_exec_cmd = "docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -e TMUX_AGENTS_AGENT=1 \
+  -u vscode {container} bash -lc 'cd {workdir} && exec codex{resume_args}'"
+```
+
+⚠️ *Note: the example above is a custom override. The default `codex_exec_cmd`
+also exports `SSH_AUTH_SOCK` to forward SSH agent credentials — copying this
+example verbatim will lose SSH forwarding. Omit `codex_exec_cmd` to use the
+automatic default, or include the SSH_AUTH_SOCK export if you customize it.*
+
+- `default_agent` (top-level, optional) — `"claude"` (default) or `"codex"`.
+  Sets which kind every project starts as its primary agent unless overridden.
+- `agent` (per-project, optional) — overrides `default_agent` for one project.
+- `codex_exec_cmd` (per-project, optional) — Codex's twin of `exec_cmd`, used
+  whichever slot (primary or secondary) is running Codex. Defaults mirror the
+  `exec_cmd` defaults exactly, substituting `codex` for `claude` and Codex's
+  `resume <id>` subcommand for `{resume_args}` instead of Claude's `--resume <id>`
+  flag.
+
+**Custom `codex_exec_cmd` contract.** If you write your own instead of taking
+the default, it must, like a custom `exec_cmd`: (1) `cd {workdir}` before
+launching Codex — Codex's project-layer session cwd must be the worktree
+root, and (2) export `TMUX_AGENTS_AGENT=1` — the marker the provisioned
+Codex hooks require before writing any state for that pane. Missing either
+one doesn't crash anything; it just leaves that pane's Codex session
+untracked (no state letter beyond whatever `phase_hint` left behind, no
+session-id capture for resume).
+
+Starting the other agent: `Ctrl-Space O` (also bound to `O` in the focused
+overview pane) is one smart action on the active window's agent(s):
+
+- Neither started yet but the default is alive → splits the window 50/50
+  and starts the other kind alongside it (idempotent Codex-hook provisioning
+  runs first; a missing `codex`/`claude` binary shows a friendly error
+  instead of a broken pane).
+- Both already running → jumps focus between the two agent panes.
+- The secondary was started before and then quit → **revives** it,
+  resuming the same conversation (its session id is retained even after the
+  pane closes) rather than starting fresh; run `/new` inside it for a clean
+  slate instead.
+- The default agent's pane is dead → a message pointing at `Ctrl-Space R`
+  (restore) instead, since there's no live pane to split from.
+- No agent window (e.g. the `ctrl` host-shell window) → a no-op message.
+
+Once both agents are running, `Ctrl-Space z` zooms/unzooms whichever pane
+has focus, same as any pane. Quitting an agent (exiting `claude`/`codex` in
+its pane) closes that pane; `agent-kill` still kills the whole window
+(both agents). `agent-restore` brings back both agents after a server
+restart, each resuming its own conversation.
+
+**Codex hook provisioning and the one-time `/hooks` approval.** Codex state
+tracking (the `R`/`W`/`I`/`X`/`S` letters — no background/sleeping tracking
+for Codex, see "State colors" below) works the same way Claude's does: a
+small hook script writes phase transitions as Codex's lifecycle events fire.
+Unlike Claude's per-worktree hooks, Codex's hooks are registered once at the
+**user level** (`~/.codex/hooks.json`, both on the host and inside every
+container's home directory) and reference a package-owned script kept
+*outside* any workspace — `~/.config/tmux-agents/codex-hook.sh` on the host,
+`<container home>/.codex/tmux-agents/codex-hook.sh` in a container — so a
+sandboxed Codex session can't tamper with the script it's trusted to run.
+`agent-new`, `agent-restore`, `agent-rebuild`, and `Ctrl-Space O` all
+(re-)provision this idempotently, so run any one of them once and you're
+set for every project. `agent-new`/`agent-restore`/`agent-rebuild` treat a
+provisioning failure as non-fatal — they warn and continue starting the
+project's default agent regardless; `Ctrl-Space O` treats it as a hard
+stop for that keypress (a friendly message, no pane created) since
+provisioning the *other* kind's hooks is the whole point of that action.
+
+The first time tmux-agents writes `~/.codex/hooks.json`, Codex will prompt
+for a **one-time `/hooks` approval** (Codex trust-gates every hook
+definition by exact hash) — approve it once and every subsequent session
+uses the hooks silently. Upgrading tmux-agents to a version that changes the
+hook script or its registered commands re-triggers that same one-time
+prompt, since the definition hash changed.
+
+One visible consequence: the session that showed the approval prompt sits
+at `starting` until you approve — its `SessionStart` fired *before* the
+approval, so it was skipped and never replayed. The first hook event after
+approving (your next prompt, a tool call) adopts that session's id and
+tracking starts mid-session. In the unlikely case the pane's letter looks
+stuck after that, `/new` inside Codex re-pins cleanly.
+
+**Codex inside a container — prerequisites.** tmux-agents does not install
+or authenticate Codex for you: the `codex` binary and a working
+`~/.codex` auth directory must already exist wherever the agent runs — on
+the host for host-only projects, baked into the devcontainer image (or
+mounted) for container projects. A missing binary shows the standard
+error pane (`X`) with the failing command; `Ctrl-Space O` additionally
+pre-flights the binary's presence before splitting a pane (skipped when
+`codex_exec_cmd`/`exec_cmd` is a custom command, since a fixed executable
+name check proves nothing about an arbitrary one).
 
 **Override the base branch for new worktrees:**
 
@@ -219,6 +337,7 @@ Cheat sheet:
 | `Ctrl-Space L`      | Toggle layout: split (vertical) ↔ compact (horizontal) |
 | `Ctrl-Space v`      | Open the current agent's worktree in VS Code     |
 | `Ctrl-Space t`      | Open a shell in the current agent's worktree (popup) |
+| `Ctrl-Space o`      | Start/switch to the window's other agent (Claude↔Codex); see "Running Codex alongside Claude" |
 | `Ctrl-Space <num>`  | Jump to window by number (shown in overview)     |
 | `Ctrl-Space w`      | Arrow-key window picker (`choose-tree`)          |
 | `Ctrl-Space z`      | Zoom/unzoom the focused pane                     |
@@ -311,6 +430,15 @@ In the bottom-pane overview:
 - blue = idle (waiting for your input)
 - red = errored
 - grey = starting (window pre-created by `agent-restore`, container not yet ready)
+
+A window running both agents shows one letter per agent, separated by a dim
+`|` (e.g. `R|I`) — the window's tab color follows whichever letter has the
+highest priority. Codex agents only ever show `R`/`W`/`I`/`X`/`S`: Codex has
+no background-subagent/scheduled-wakeup tracking, so `background`/`sleeping`
+never apply to a Codex slot. A denied Codex permission prompt has no
+dedicated "denied" event, so that pane can stay `waiting` (yellow) until its
+next tracked event (worst case, until it goes idle) even after you've
+declined the prompt inside Codex itself — expected today, not a bug.
 
 ## Uninstall
 

@@ -61,3 +61,21 @@ def test_autouse_isolation_redirects_both_dirs_away_from_real_paths():
     could wipe or contaminate the developer's live setup."""
     assert paths.config_dir() != Path.home() / ".config/tmux-agents"
     assert paths.state_dir() != Path("/tmp/tmux-agents")
+
+
+def test_atomic_write_json_preserves_umask_based_permissions(tmp_path):
+    """atomic_write_json should write files with umask-respecting permissions,
+    not the restrictive 0600 from mkstemp."""
+    import os
+
+    test_file = tmp_path / "test.json"
+    paths.atomic_write_json(test_file, {"key": "value"})
+
+    # Get the actual umask
+    um = os.umask(0)
+    os.umask(um)
+
+    # Check that the file has umask-respecting permissions
+    actual_mode = test_file.stat().st_mode & 0o777
+    expected_mode = 0o666 & ~um
+    assert actual_mode == expected_mode

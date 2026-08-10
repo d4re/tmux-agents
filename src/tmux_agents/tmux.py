@@ -47,6 +47,7 @@ class Window:
 class Pane:
     id: str
     index: int
+    role: str = ""
 
 
 class TmuxError(subprocess.CalledProcessError):
@@ -110,14 +111,14 @@ def list_windows(session: str) -> list[Window]:
 
 def list_panes(window_id: str) -> list[Pane]:
     out = _run(
-        ["list-panes", "-t", window_id, "-F", "#{pane_id}\t#{pane_index}"]
+        ["list-panes", "-t", window_id, "-F", "#{pane_id}\t#{pane_index}\t#{@role}"]
     ).stdout
     panes: list[Pane] = []
     for line in out.splitlines():
         if not line.strip():
             continue
-        pid, idx = line.split("\t", 1)
-        panes.append(Pane(id=pid, index=int(idx)))
+        pid, idx, role = line.split("\t", 2)
+        panes.append(Pane(id=pid, index=int(idx), role=role))
     return panes
 
 
@@ -160,32 +161,25 @@ def kill_window(target: str) -> None:
 
 
 def split_window(
-    target: str, *, percent: int, command: str, before: bool = False
+    target: str,
+    *,
+    percent: int,
+    command: str,
+    before: bool = False,
+    horizontal: bool = False,
+    full_size: bool = False,
 ) -> str:
-    """Split `target` (window id or pane id) and return the new pane id.
-
-    `before=True` adds `-b` so the new pane lands above (`-v` direction).
-    `-d` keeps focus on the original pane.
-
-    Percentage goes through `-l <n>%`, not `-p <n>`: tmux 3.4 (current
-    Ubuntu/Debian stable) still parses `-p` but fails every split with
-    `size missing`; `-l <n>%` is the documented percentage syntax and
-    works on 3.4 and later alike."""
-    args = [
-        "split-window",
-        "-v",
-        "-d",
-        "-l",
-        f"{percent}%",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "-t",
-        target,
-    ]
+    """Split `target` and return the new pane id. `horizontal=True` → `-h`
+    (side-by-side; default `-v`). `full_size=True` → `-f` (new pane spans
+    the full window edge — used by the overview so it sits under BOTH
+    agent panes of a dual window). `before=True` → `-b`. `-l <n>%` not
+    `-p` (tmux 3.4 rejects -p)."""
+    args = ["split-window", "-h" if horizontal else "-v"]
+    if full_size:
+        args.append("-f")
     if before:
-        args.insert(1, "-b")
-    args.append(command)
+        args.append("-b")
+    args += ["-d", "-l", f"{percent}%", "-P", "-F", "#{pane_id}", "-t", target, command]
     return _run(args, check=True).stdout.strip()
 
 
@@ -311,6 +305,21 @@ def window_pane_map(session: str) -> dict[str, set[str]]:
 
 def active_pane_id(window_id: str) -> str:
     return _run(["display-message", "-p", "-t", window_id, "#{pane_id}"]).stdout.strip()
+
+
+def pane_alive(window_id: str, pane_id: str) -> bool:
+    """True if `pane_id` (with `%`) is currently a live (non-dead) pane of
+    `window_id`. A narrow, single-window re-verify query — cheaper than a
+    full `window_pane_map` — used by the state tick's death-marking and
+    cleanup-pointer sweep to re-check liveness under the cleanup lock right
+    before mutating, since the snapshot they started from can be stale by
+    the time the lock is acquired."""
+    out = _run(["list-panes", "-t", window_id, "-F", "#{pane_id}\t#{pane_dead}"]).stdout
+    for line in out.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[0] == pane_id and parts[1] == "0":
+            return True
+    return False
 
 
 def set_pane_option(pane_id: str, name: str, value: str) -> None:
