@@ -1,6 +1,9 @@
 """Docker probes: `is_running`, `current_name` (by `container=` name OR
-`devcontainer.local_folder` label), `ensure_up`, and `rebuild`. Sole module
-that shells out to `docker` (the SSH pump aside)."""
+`devcontainer.local_folder` label), `ensure_up`, and `rebuild`. Also
+`exec_capture`, a thin `docker exec -i -u <user> <name> sh -c <script>`
+wrapper used by callers (e.g. `codex_hooks.ensure_container`) that need to
+run/read/write inside a container as a specific user. Sole module that
+shells out to `docker` (the SSH pump aside)."""
 
 import logging
 import subprocess
@@ -82,6 +85,18 @@ def rebuild(proj: Project, *, up_cmd: str | None, no_cache: bool = False) -> str
     if not name:
         raise ContainerError(f"rebuild ran but no container for {proj.name!r} is up")
     return name
+
+
+def exec_capture(name: str, user: str, script: str, *, stdin: str | None = None) -> str:
+    """Run `sh -c <script>` inside container `name` as `user`, returning
+    stdout. Raises `subprocess.CalledProcessError` on nonzero exit."""
+    return subprocess.run(
+        ["docker", "exec", "-i", "-u", user, name, "sh", "-c", script],
+        input=stdin,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
 
 
 def ensure_up(proj: Project, *, up_cmd: str | None) -> str:
