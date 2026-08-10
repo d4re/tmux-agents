@@ -13,8 +13,11 @@ import sys
 import time
 from importlib import resources
 from tmux_agents import (
+    codex_hooks,
     config,
     container,
+    exec_cmd,
+    locks,
     logging_setup,
     overview,
     paths,
@@ -145,11 +148,17 @@ def _provision(
             startup._write_pane_state(worktree_path, pane_id, phase_value=phase.ERRORED)
         else:
             # Worktree doesn't exist yet — flip the host-side hint to errored.
-            m = windows_mod.read_mapping(window_id)
-            if m is not None:
-                windows_mod.write_mapping(
+            # update_mapping (not a bare read+write) so a mapping mutated
+            # concurrently (e.g. a secondary slot published by agent-other)
+            # between the read and this write isn't clobbered.
+            windows_mod.update_mapping(
+                window_id,
+                lambda m: (
                     dataclasses.replace(m, phase_hint=phase.ERRORED)
-                )
+                    if m is not None
+                    else None
+                ),
+            )
         logger.error("%s: %s", window_id, reason)
         return 4
 
@@ -215,11 +224,32 @@ def _provision(
                         reporter_stage=st,
                     )
 
-            # Worktree confirmed: rewrite the mapping with the real path, clear the hint.
-            m = windows_mod.read_mapping(window_id)
-            if m is not None:
-                windows_mod.write_mapping(
-                    dataclasses.replace(m, host_worktree=wt_path, phase_hint=None)
+            # Scrub against the RESOLVED path BEFORE publishing it into the
+            # mapping, both under the SAME cleanup-lock hold (global lock
+            # order: cleanup lock first, mapping lock second — see
+            # docs/ARCHITECTURE.md "Lock discipline"). Publishing
+            # host_worktree=wt_path first would make the worktree visible to
+            # a concurrent state tick, which could merge a stale
+            # `session-<pane>.id` left under `wt_path` into the mapping
+            # before the scrub below removes it — scrubbing first closes
+            # that window. The pre-resolution scrub at the bottom of
+            # interactive `main` only clears the repo-rooted location; a
+            # worktree's own state/session/pending files live under
+            # `wt_path`, which is only known now. Required before launching
+            # an agent into a (possibly recycled) pane id.
+            with locks.locked(paths.worktree_cleanup_lock(wt_path)):
+                startup.scrub_pane_files(wt_path, pane_id)
+                # update_mapping (not a bare read+write) so its `fn` reads
+                # fresh at write time — a secondary slot published by
+                # `agent-other` between this stage starting and now survives
+                # the rewrite instead of being clobbered by a stale snapshot.
+                windows_mod.update_mapping(
+                    window_id,
+                    lambda m: (
+                        dataclasses.replace(m, host_worktree=wt_path, phase_hint=None)
+                        if m is not None
+                        else None
+                    ),
                 )
 
             with reporter.stage("hooks") as st:
@@ -238,11 +268,29 @@ def _provision(
                         "%s: provisioning failed (non-fatal)", window_id, exc_info=True
                     )
 
-            cmd = proj.substitute(
-                proj.exec_cmd,
+            with reporter.stage("codex hooks") as st:
+                try:
+                    if proj.is_container:
+                        codex_hooks.ensure_container(
+                            container_name, proj.user or "vscode"
+                        )
+                    else:
+                        codex_hooks.ensure_host()
+                except Exception as e:
+                    st.warn(f"could not provision codex hooks: {type(e).__name__}: {e}")
+                    logger.warning(
+                        "%s: codex hook provisioning failed (non-fatal)",
+                        window_id,
+                        exc_info=True,
+                    )
+
+            cmd = exec_cmd.build(
+                proj,
                 branch=branch,
+                session_id=None,
                 container_name=container_name,
-                resume_args="",
+                kind=proj.agent,
+                label=window_id,
             )
 
         # Log file closed. Swap the pane into Claude (or hold on warning).
@@ -367,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             host_worktree=proj.repo,
             pane_id=pane_id,
             phase_hint=phase.STARTING,
+            agents=[windows_mod.AgentSlot(kind=proj.agent, pane_id=pane_id)],
         )
     )
     if paths.read_layout() == "split":

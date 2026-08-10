@@ -1,7 +1,17 @@
 import shlex
+from contextlib import contextmanager
 from types import SimpleNamespace
 from tmux_agents.commands import new
-from tmux_agents import tmux, container, pickers, worktree, ssh_forward, phase
+from tmux_agents import (
+    tmux,
+    container,
+    pickers,
+    worktree,
+    ssh_forward,
+    phase,
+    codex_hooks,
+    paths,
+)
 from tmux_agents import windows as windows_mod
 
 
@@ -73,7 +83,14 @@ def _provision_env(
     tests drive _provision directly via new.main(["--provision", ...]) without
     actually forking or closing file descriptors."""
     import os as _os
-    from tmux_agents import container, worktree, provisioning, ssh_forward, startup
+    from tmux_agents import (
+        container,
+        worktree,
+        provisioning,
+        ssh_forward,
+        startup,
+        codex_hooks,
+    )
     from tmux_agents import windows as windows_mod
 
     repo, _ = _write_config(tmp_config_dir, tmp_path)
@@ -116,6 +133,8 @@ def _provision_env(
         return True
 
     monkeypatch.setattr(provisioning, "provision_settings", fake_provision)
+    monkeypatch.setattr(codex_hooks, "ensure_host", lambda: True)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     monkeypatch.setattr(
         startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
     )
@@ -469,6 +488,7 @@ def test_new_devcontainer_resolved_name_flows_to_exec_cmd(
     )
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     monkeypatch.setattr(
         startup_mod,
         "_respawn_with_retry",
@@ -756,6 +776,7 @@ def test_new_skips_ssh_pump_when_forward_ssh_agent_false(
     )
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
     monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
     monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
@@ -953,6 +974,7 @@ def test_new_spawns_ssh_pump_with_project_user(monkeypatch, tmp_config_dir, tmp_
     )
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
     monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
     monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
@@ -1238,3 +1260,371 @@ def test_new_interactive_clears_stale_pane_state(
     assert not stale.exists(), (
         "stale state file should have been unlinked before mapping write"
     )
+
+
+# ===== Task 15: slot-0 kind, full scrub, codex provisioning =====
+
+
+def test_new_interactive_records_slot0_kind_for_codex_default_project(
+    agent_new_env, tmp_config_dir, tmp_path
+):
+    """The initial WindowMapping's slot 0 kind must match the project's
+    default agent — a codex-default project's mapping records kind='codex'."""
+    repo = tmp_path / "codexy"
+    repo.mkdir()
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[codexy]\nrepo = "{repo}"\nagent = "codex"\n'
+    )
+    rc = new.main(["codexy"])
+    assert rc == 0
+    m = windows_mod.read_mapping("@5")
+    assert m is not None
+    assert m.default_slot.kind == "codex"
+    assert m.default_slot.pane_id == "23"
+    assert len(m.agents) == 1
+
+
+def test_new_interactive_records_slot0_kind_claude_by_default(
+    agent_new_env, tmp_config_dir, tmp_path
+):
+    _write_config(tmp_config_dir, tmp_path)
+    rc = new.main(["api"])
+    assert rc == 0
+    m = windows_mod.read_mapping("@5")
+    assert m.default_slot.kind == "claude"
+
+
+def test_new_provision_scrubs_pane_files_under_cleanup_lock_against_resolved_path(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """_provision must scrub the pane's state/session/pending files against
+    the RESOLVED worktree path (not the pre-resolution host_worktree), under
+    the per-worktree cleanup lock — required before launching into a
+    (possibly recycled) pane id."""
+    from tmux_agents import locks as locks_mod
+
+    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    repo = tmp_path / "api"
+    resolved = repo / ".worktrees" / "feat-x"
+    resolved.mkdir(parents=True)
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@5",
+            project="api",
+            branch="feat-x",
+            host_worktree=repo,
+            pane_id="23",
+            phase_hint="starting",
+        )
+    )
+    monkeypatch.setattr(worktree, "resolve", lambda *a, **k: resolved)
+
+    scrub_calls = []
+    monkeypatch.setattr(
+        new.startup,
+        "scrub_pane_files",
+        lambda wt, pid: scrub_calls.append((wt, pid)),
+    )
+    lock_paths = []
+    real_locked = locks_mod.locked
+
+    @contextmanager
+    def spy_locked(path):
+        lock_paths.append(path)
+        with real_locked(path):
+            yield
+
+    monkeypatch.setattr(new.locks, "locked", spy_locked)
+
+    rc = new.main(
+        [
+            "--provision",
+            "--window-id",
+            "@5",
+            "--pane-id",
+            "23",
+            "--project",
+            "api",
+            "--branch",
+            "feat-x",
+        ]
+    )
+    assert rc == 0
+    assert cap  # sanity: env stubbed
+    assert scrub_calls == [(resolved, "23")]
+    # Global lock order (docs/ARCHITECTURE.md "Lock discipline"): cleanup
+    # lock first (outer), mapping lock second (inner, via update_mapping).
+    assert lock_paths == [
+        paths.worktree_cleanup_lock(resolved),
+        paths.window_mapping_lock("@5"),
+    ]
+
+
+def test_new_provision_worktree_confirm_preserves_concurrent_secondary_slot(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """The 'worktree confirmed' mapping rewrite goes through
+    `update_mapping`, not a bare read+write — so a secondary agent slot
+    published (e.g. by `agent-other`) between the worker's initial mapping
+    seed and this rewrite survives. A bare write_mapping using a stale `m`
+    snapshot would have clobbered it."""
+    _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    repo = tmp_path / "api"
+    # Simulate a secondary slot having been appended (by a concurrent
+    # `agent-other` start) after the worker's own seed but before the
+    # worktree-confirmed rewrite runs.
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@5",
+            project="api",
+            branch="feat-x",
+            host_worktree=repo,
+            pane_id="23",
+            phase_hint="starting",
+            agents=[
+                windows_mod.AgentSlot(kind="claude", pane_id="23"),
+                windows_mod.AgentSlot(kind="codex", pane_id="30"),
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        worktree,
+        "resolve",
+        lambda repo_arg, branch, **kw: repo_arg / ".worktrees" / branch,
+    )
+
+    rc = new.main(
+        [
+            "--provision",
+            "--window-id",
+            "@5",
+            "--pane-id",
+            "23",
+            "--project",
+            "api",
+            "--branch",
+            "feat-x",
+        ]
+    )
+    assert rc == 0
+    m = windows_mod.read_mapping("@5")
+    assert m.phase_hint is None
+    assert m.host_worktree == repo / ".worktrees" / "feat-x"
+    # The concurrently-published secondary slot survived the rewrite.
+    assert len(m.agents) == 2
+    assert m.agents[1].kind == "codex"
+    assert m.agents[1].pane_id == "30"
+
+
+def test_new_provision_scrubs_before_publishing_resolved_worktree(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """Scrub must run BEFORE the mapping's host_worktree flips to the
+    resolved path. Publishing first would make the worktree visible to a
+    concurrent state-tick merge (which reads session-<pane>.id under the
+    newly-visible host_worktree) before the scrub had a chance to remove a
+    stale session file left there by a previous occupant of this recycled
+    pane id."""
+    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    repo = tmp_path / "api"
+    resolved = repo / ".worktrees" / "feat-x"
+    resolved.mkdir(parents=True)
+    # Stale session file for pane 23 under the RESOLVED worktree, as if left
+    # by a previous occupant of this recycled pane id.
+    stale_session = paths.worktree_session_id_file(resolved, "23")
+    stale_session.parent.mkdir(parents=True, exist_ok=True)
+    stale_session.write_text("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@5",
+            project="api",
+            branch="feat-x",
+            host_worktree=repo,
+            pane_id="23",
+            phase_hint="starting",
+        )
+    )
+    monkeypatch.setattr(worktree, "resolve", lambda *a, **k: resolved)
+
+    events: list[str] = []
+    real_scrub = new.startup.scrub_pane_files
+
+    def spy_scrub(wt, pid):
+        # host_worktree must NOT be the resolved path yet at scrub time.
+        assert windows_mod.read_mapping("@5").host_worktree == repo
+        events.append("scrub")
+        return real_scrub(wt, pid)
+
+    monkeypatch.setattr(new.startup, "scrub_pane_files", spy_scrub)
+
+    real_update_mapping = windows_mod.update_mapping
+
+    def spy_update_mapping(win_id, fn):
+        events.append("publish")
+        return real_update_mapping(win_id, fn)
+
+    monkeypatch.setattr(new.windows_mod, "update_mapping", spy_update_mapping)
+
+    assert cap  # sanity: env stubbed
+    rc = new.main(
+        [
+            "--provision",
+            "--window-id",
+            "@5",
+            "--pane-id",
+            "23",
+            "--project",
+            "api",
+            "--branch",
+            "feat-x",
+        ]
+    )
+    assert rc == 0
+    assert events == ["scrub", "publish"]
+    assert not stale_session.exists()  # scrub actually removed the stale file
+    assert windows_mod.read_mapping("@5").host_worktree == resolved
+
+
+def test_new_provision_ensures_codex_hooks_for_host_project(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """Host-only project: _provision calls codex_hooks.ensure_host(), not
+    ensure_container (there's no container to provision into)."""
+    import os as _os
+    from tmux_agents import worktree as wt_mod, provisioning as prov_mod
+    from tmux_agents import startup as startup_mod
+
+    _, repo2 = _write_config(tmp_config_dir, tmp_path)
+    monkeypatch.setattr(_os, "fork", lambda: 0)
+    monkeypatch.setattr(_os, "setsid", lambda: None)
+    monkeypatch.setattr(startup_mod, "_detach_stdio", lambda: None)
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@5",
+            project="scripts",
+            branch=None,
+            host_worktree=repo2,
+            pane_id="23",
+            phase_hint="starting",
+        )
+    )
+    monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo2)
+    monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
+
+    host_calls = []
+    monkeypatch.setattr(
+        codex_hooks, "ensure_host", lambda: host_calls.append(1) or True
+    )
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_container",
+        lambda *a: (_ for _ in ()).throw(
+            AssertionError("must not be called for a host-only project")
+        ),
+    )
+
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "scripts"]
+    )
+    assert rc == 0
+    assert host_calls == [1]
+
+
+def test_new_provision_ensures_codex_hooks_for_container_project(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """Container project: _provision calls codex_hooks.ensure_container with
+    the resolved container name + user, after the container is up."""
+    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_container",
+        lambda name, user: calls.append((name, user)) or True,
+    )
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_host",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("must not be called for a container project")
+        ),
+    )
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "api"]
+    )
+    assert rc == 0
+    assert cap
+    assert calls == [("api-devcontainer", "vscode")]
+
+
+def test_new_provision_codex_ensure_failure_is_nonfatal_but_warns(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """A codex-hook provisioning failure must not fail the whole spawn — it
+    is reported as a warning (pane held for review), mirroring the existing
+    Claude-hooks provisioning-warning path."""
+    cap = _provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_container",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "api"]
+    )
+    assert rc == 0
+    assert len(cap.holds) == 1
+    assert cap.respawns == []
+
+
+def test_new_provision_respawns_codex_when_project_default_is_codex(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """The final respawn command must use the project's default kind's exec
+    template — a codex-default project launches codex, not claude."""
+    import os as _os
+    from tmux_agents import worktree as wt_mod, provisioning as prov_mod
+    from tmux_agents import startup as startup_mod
+
+    repo = tmp_path / "codexy"
+    repo.mkdir()
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[codexy]\nrepo = "{repo}"\nagent = "codex"\n'
+    )
+    monkeypatch.setattr(_os, "fork", lambda: 0)
+    monkeypatch.setattr(_os, "setsid", lambda: None)
+    monkeypatch.setattr(startup_mod, "_detach_stdio", lambda: None)
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@5",
+            project="codexy",
+            branch=None,
+            host_worktree=repo,
+            pane_id="23",
+            phase_hint="starting",
+            agents=[windows_mod.AgentSlot(kind="codex", pane_id="23")],
+        )
+    )
+    monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo)
+    monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(codex_hooks, "ensure_host", lambda: True)
+    captured = {}
+    monkeypatch.setattr(
+        startup_mod,
+        "_respawn_with_retry",
+        lambda pid, cmd: captured.__setitem__("cmd", cmd),
+    )
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
+
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "codexy"]
+    )
+    assert rc == 0
+    assert "codex" in captured["cmd"]
+    assert "claude" not in captured["cmd"]
