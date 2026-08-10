@@ -168,3 +168,47 @@ def test_hold_pane_then_exec_does_not_exec_prefix_a_cd_command(
     _, cmd = calls[0]
     assert "exec cd" not in cmd
     assert cmd.rstrip("'").endswith(real_exec_cmd)
+
+
+def test_scrub_pane_files_removes_all_three(tmp_path):
+    d = tmp_path / ".local" / ".tmux-agents"
+    d.mkdir(parents=True)
+    (d / "state-12.json").write_text("{}")
+    (d / "session-12.id").write_text("x")
+    (d / "pending-12").mkdir()
+    (d / "pending-12" / "wakeup").write_text("")
+    startup.scrub_pane_files(tmp_path, "12")
+    assert not (d / "state-12.json").exists()
+    assert not (d / "session-12.id").exists()
+    assert not (d / "pending-12").exists()
+
+
+def test_scrub_pane_files_tolerates_absence(tmp_path):
+    startup.scrub_pane_files(tmp_path, "99")  # no raise
+
+
+def test_pane_files_absent_true_when_nothing_on_disk(tmp_path):
+    assert startup.pane_files_absent(tmp_path, "12") is True
+
+
+def test_pane_files_absent_false_when_state_file_survives(tmp_path):
+    d = tmp_path / ".local" / ".tmux-agents"
+    d.mkdir(parents=True)
+    (d / "state-12.json").write_text("{}")
+    assert startup.pane_files_absent(tmp_path, "12") is False
+
+
+def test_pane_files_absent_false_when_pending_dir_survives(tmp_path):
+    d = tmp_path / ".local" / ".tmux-agents" / "pending-12"
+    d.mkdir(parents=True)
+    assert startup.pane_files_absent(tmp_path, "12") is False
+
+
+def test_pane_files_absent_true_after_scrub(tmp_path):
+    d = tmp_path / ".local" / ".tmux-agents"
+    d.mkdir(parents=True)
+    (d / "state-12.json").write_text("{}")
+    (d / "session-12.id").write_text("x")
+    (d / "pending-12").mkdir()
+    startup.scrub_pane_files(tmp_path, "12")
+    assert startup.pane_files_absent(tmp_path, "12") is True

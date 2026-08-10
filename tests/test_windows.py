@@ -1,5 +1,6 @@
 from pathlib import Path
 from tmux_agents import windows, paths, tmux as tmux_mod
+from tmux_agents.windows import AgentSlot, WindowMapping
 
 
 def test_write_and_read_mapping(tmp_config_dir, tmp_path):
@@ -185,3 +186,115 @@ def test_mapping_omits_phase_hint_when_unset(tmp_config_dir):
     assert "phase_hint" not in m.to_dict()
     windows.write_mapping(m)
     assert windows.read_mapping("@8").phase_hint is None
+
+
+def test_from_dict_synthesizes_claude_slot_from_legacy():
+    m = WindowMapping.from_dict(
+        "@1",
+        {
+            "project": "p",
+            "branch": None,
+            "host_worktree": "/r",
+            "pane_id": "12",
+            "claude_session_id": "s-1",
+        },
+    )
+    assert m.agents == [AgentSlot(kind="claude", pane_id="12", session_id="s-1")]
+    assert m.schema == 2
+
+
+def test_roundtrip_two_slots():
+    m = WindowMapping(
+        window_id="@1",
+        project="p",
+        branch="b",
+        host_worktree=Path("/r"),
+        pane_id="12",
+        agents=[
+            AgentSlot(kind="claude", pane_id="12", session_id="s-1"),
+            AgentSlot(kind="codex", pane_id=None, session_id="c-1", last_pane_id="15"),
+        ],
+    )
+    d = m.to_dict()
+    assert d["schema"] == 2
+    m2 = WindowMapping.from_dict("@1", d)
+    assert m2.agents == m.agents
+
+
+def test_to_dict_mirrors_slot0_for_downgrade():
+    m = WindowMapping(
+        window_id="@1",
+        project="p",
+        branch=None,
+        host_worktree=Path("/r"),
+        pane_id="12",
+        agents=[AgentSlot(kind="claude", pane_id="12", session_id="s-1")],
+    )
+    d = m.to_dict()
+    assert d["pane_id"] == "12"
+    assert d["claude_session_id"] == "s-1"
+
+
+def test_to_dict_never_mirrors_codex_session_as_claude():
+    m = WindowMapping(
+        window_id="@1",
+        project="p",
+        branch=None,
+        host_worktree=Path("/r"),
+        pane_id="12",
+        agents=[AgentSlot(kind="codex", pane_id="12", session_id="c-1")],
+    )
+    d = m.to_dict()
+    assert d["pane_id"] == "12"
+    assert "claude_session_id" not in d
+
+
+def test_slot_accessors():
+    a = AgentSlot(kind="claude", pane_id="12")
+    b = AgentSlot(kind="codex", pane_id="15")
+    m = WindowMapping(
+        window_id="@1",
+        project="p",
+        branch=None,
+        host_worktree=Path("/r"),
+        pane_id="12",
+        agents=[a, b],
+    )
+    assert m.default_slot == a
+    assert m.secondary_slot == b
+    m1 = WindowMapping(
+        window_id="@1",
+        project="p",
+        branch=None,
+        host_worktree=Path("/r"),
+        pane_id="12",
+        agents=[a],
+    )
+    assert m1.secondary_slot is None
+
+
+def test_forget_scrubs_every_slot_and_pending_pointer(tmp_path, tmp_state_dir):
+    wt = tmp_path / "repo"
+    d = wt / ".local" / ".tmux-agents"
+    d.mkdir(parents=True)
+    for pane in ("12", "15", "20"):
+        (d / f"state-{pane}.json").write_text("{}")
+        (d / f"session-{pane}.id").write_text("x")
+    windows.write_mapping(
+        WindowMapping(
+            window_id="@1",
+            project="p",
+            branch=None,
+            host_worktree=wt,
+            pane_id="12",
+            agents=[
+                AgentSlot(kind="claude", pane_id="12"),
+                AgentSlot(kind="codex", pane_id="15", last_pane_id="20"),
+            ],
+        )
+    )
+    windows.forget("@1")
+    for pane in ("12", "15", "20"):
+        assert not (d / f"state-{pane}.json").exists()
+        assert not (d / f"session-{pane}.id").exists()
+    assert windows.read_mapping("@1") is None

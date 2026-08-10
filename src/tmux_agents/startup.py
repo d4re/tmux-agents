@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import time
 from pathlib import Path
 
@@ -118,3 +119,26 @@ def hold_pane_then_exec(pane_id: str, log_path: Path, exec_cmd: str) -> None:
         f"{exec_cmd}"
     )
     _respawn_with_retry(pane_id, f"sh -c {shlex.quote(inner)}")
+
+
+def scrub_pane_files(worktree: Path, pane_id: str) -> None:
+    """Delete a pane's state/session/pending files under the RESOLVED
+    worktree. Callers hold the per-worktree cleanup lock. Required before
+    launching an agent into a (possibly recycled) pane id — see the spec's
+    aliasing guard."""
+    paths.worktree_state_file(worktree, pane_id).unlink(missing_ok=True)
+    paths.worktree_session_id_file(worktree, pane_id).unlink(missing_ok=True)
+    shutil.rmtree(paths.worktree_pending_dir(worktree, pane_id), ignore_errors=True)
+
+
+def pane_files_absent(worktree: Path, pane_id: str) -> bool:
+    """True iff none of a pane's state/session/pending artifacts remain on
+    disk under `worktree`. Used to verify a `scrub_pane_files` call actually
+    completed before a caller clears a cleanup pointer that depends on
+    it — `shutil.rmtree(ignore_errors=True)` can silently leave a survivor
+    (e.g. a permission error), and that must not be mistaken for success."""
+    return (
+        not paths.worktree_state_file(worktree, pane_id).exists()
+        and not paths.worktree_session_id_file(worktree, pane_id).exists()
+        and not paths.worktree_pending_dir(worktree, pane_id).exists()
+    )
