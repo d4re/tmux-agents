@@ -459,3 +459,48 @@ def test_ensure_host_heals_with_malformed_groups(tmp_path, monkeypatch):
     )
     # Bad group should be preserved as foreign data
     assert "bad-group" in data["hooks"]["SessionStart"]
+
+
+def test_is_owned_recognizes_obsolete_script_locations():
+    """Entries stranded at an old install path (moved config dir, or a leak
+    from a redirected-paths run) are still ours to reclaim."""
+    stale = "sh /tmp/pytest-of-x/test_y0/config/codex-hook.sh running"
+    assert codex_hooks.is_owned(stale, SP)
+    quoted = "sh '/weird dir/codex-hook.sh' idle"
+    assert codex_hooks.is_owned(quoted, SP)
+    # Shape guards still hold.
+    assert not codex_hooks.is_owned("logger sh /a/codex-hook.sh idle", SP)
+    assert not codex_hooks.is_owned("sh /a/codex-hook.sh.backup idle", SP)
+    assert not codex_hooks.is_owned("sh /a/codex-hook.sh idle && echo hi", SP)
+
+
+def test_ensure_host_reclaims_entries_at_stale_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMUX_AGENTS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("TMUX_AGENTS_CODEX_HOME", str(tmp_path / "codex"))
+    home = tmp_path / "codex"
+    home.mkdir(parents=True)
+    stale_cmd = "sh /tmp/pytest-of-x/test_y0/config/codex-hook.sh running"
+    (home / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {"hooks": [{"type": "command", "command": stale_cmd}]}
+                    ],
+                    "Stop": [{"hooks": [{"type": "command", "command": "user-thing"}]}],
+                }
+            }
+        )
+    )
+    assert codex_hooks.ensure_host() is True
+    data = json.loads((home / "hooks.json").read_text())
+    all_cmds = [
+        h["command"]
+        for groups in data["hooks"].values()
+        for g in groups
+        for h in g["hooks"]
+    ]
+    assert stale_cmd not in all_cmds  # zombie reclaimed and dropped
+    assert "user-thing" in all_cmds  # genuine foreign hook preserved
+    script = str(tmp_path / "cfg" / "codex-hook.sh")
+    assert f"sh {script} running" in all_cmds  # canonical set present

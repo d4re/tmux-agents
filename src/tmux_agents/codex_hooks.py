@@ -51,8 +51,21 @@ def _owned_re(script_path: Path) -> re.Pattern:
     )
 
 
+# The generic shape of any command we have EVER generated: `sh` + one
+# absolute path whose basename is codex-hook.sh (quoted or bare) + exactly
+# one action word. Matching by shape (not just the current install path)
+# lets ensure/merge reclaim entries stranded at obsolete locations — a
+# moved config dir, or a leak from a run with redirected paths. Wrappers
+# (`logger sh …`), trailing shell (`… && rm`), and `codex-hook.sh.backup`
+# still never match: the anchors, the single action word, and the
+# `/codex-hook.sh` basename suffix rule them out.
+_ANY_OWNED_RE = re.compile(
+    r"^sh (?:'/[^']*/codex-hook\.sh'|/[^\s'\"]*/codex-hook\.sh) [A-Za-z0-9_-]+$"
+)
+
+
 def is_owned(command: str, script_path: Path) -> bool:
-    return bool(_owned_re(script_path).match(command))
+    return bool(_owned_re(script_path).match(command) or _ANY_OWNED_RE.match(command))
 
 
 def _as_dict(v) -> dict:
