@@ -39,10 +39,17 @@ from tmux_agents import (
     tmux,
 )
 from tmux_agents import windows as windows_mod
+from tmux_agents.commands import state_tick
 from tmux_agents.config import Project
 from tmux_agents.windows import AgentSlot, WindowMapping
 
 logger = logging.getLogger(__name__)
+
+
+def _read_disk_session_id(worktree, pane_id: str) -> str | None:
+    """Delegates to the state tick's on-disk session-id reader (same
+    UUID-shape sanity check as the hook's sed validator)."""
+    return state_tick._read_session_id(worktree, pane_id)
 
 
 def _notice(msg: str) -> int:
@@ -148,10 +155,24 @@ def _start(mapping: WindowMapping, proj: Project, window_id: str) -> int:
         fresh = windows_mod.read_mapping(window_id)
         if fresh is None:
             return _notice("agent-other: no agent window")
+        try:
+            fresh_panes = tmux.window_pane_map(tmux.SESSION)
+        except subprocess.CalledProcessError:
+            return _notice("agent-other: tmux unavailable")
+        live_here = fresh_panes.get(window_id, set())
+        session_live = {p for panes in fresh_panes.values() for p in panes}
+
         secondary = fresh.secondary_slot
+        stale_pane: str | None = None
         if secondary is not None and secondary.pane_id is not None:
-            _focus_jump(window_id, fresh)
-            return 0
+            if f"%{secondary.pane_id}" in live_here:
+                _focus_jump(window_id, fresh)
+                return 0
+            # Recorded but not live: the pane exited and the tick hasn't
+            # marked the slot dead yet. Treat it as dead and revive in
+            # place — harvesting the freshest resume id from disk exactly
+            # like the tick's death-marking would.
+            stale_pane = secondary.pane_id
 
         default_pane = f"%{fresh.default_slot.pane_id}"
         new_pane = tmux.split_window(
@@ -164,6 +185,8 @@ def _start(mapping: WindowMapping, proj: Project, window_id: str) -> int:
         try:
             startup.scrub_pane_files(worktree, new_pane_stripped)
             session_id = secondary.session_id if secondary is not None else None
+            if stale_pane is not None:
+                session_id = _read_disk_session_id(worktree, stale_pane) or session_id
             cmd = exec_cmd.build(
                 proj,
                 branch=fresh.branch,
@@ -179,9 +202,10 @@ def _start(mapping: WindowMapping, proj: Project, window_id: str) -> int:
                     return None
                 agents = list(m.agents)
                 if len(agents) > 1:
-                    agents[1] = dataclasses.replace(
-                        agents[1], pane_id=new_pane_stripped
-                    )
+                    updates: dict = {"pane_id": new_pane_stripped}
+                    if stale_pane is not None and session_id:
+                        updates["session_id"] = session_id
+                    agents[1] = dataclasses.replace(agents[1], **updates)
                 else:
                     agents.append(AgentSlot(kind=other_kind, pane_id=new_pane_stripped))
                 return dataclasses.replace(m, agents=agents)
@@ -191,6 +215,11 @@ def _start(mapping: WindowMapping, proj: Project, window_id: str) -> int:
                 raise RuntimeError(
                     f"mapping for {window_id} disappeared before publish"
                 )
+            if stale_pane is not None and f"%{stale_pane}" not in session_live:
+                # The exited pane's files were never death-marked, so no
+                # cleanup pointer exists for them; scrub inline (still under
+                # the cleanup lock, verified dead session-wide).
+                startup.scrub_pane_files(worktree, stale_pane)
         except Exception:
             logger.warning(
                 "agent-other: start failed for %s, rolling back pane %s",
@@ -224,7 +253,15 @@ def main(argv: list[str] | None = None) -> int:
         return _notice("default agent down — Ctrl-Space R to restore")
 
     secondary = mapping.secondary_slot
-    if secondary is not None and secondary.pane_id is not None:
+    if (
+        secondary is not None
+        and secondary.pane_id is not None
+        and f"%{secondary.pane_id}" in live
+    ):
+        # Focus-jump only when the recorded pane is actually alive. A
+        # just-exited secondary keeps its pane_id until the next tick nulls
+        # it; treating the bare mapping entry as "live" would make
+        # select-pane fail here instead of reviving.
         try:
             _focus_jump(window_id, mapping)
         except tmux.TmuxError as ex:

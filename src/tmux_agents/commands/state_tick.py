@@ -218,6 +218,11 @@ def _mapping_needs_merge(mapping: "windows.WindowMapping", win: "tmux.Window") -
     (and its fresh re-read) on the common tick where nothing changed."""
     if win.index != mapping.window_index:
         return True
+    if mapping.orphaned_at is not None:
+        # A live window with a tombstone means the id came back (new server
+        # reuse); the stale timestamp must be cleared even when nothing else
+        # changed, or a later disappearance skips the 90s grace entirely.
+        return True
     for s in mapping.agents:
         if not s.pane_id:
             continue

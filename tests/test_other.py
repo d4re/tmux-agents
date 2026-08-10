@@ -399,7 +399,9 @@ def test_start_vs_start_loser_focus_jumps_no_second_split(
     )
     _write_mapping(dead)
     calls = _stub(monkeypatch)
-    _live(monkeypatch, ["%1"])
+    # The winner's freshly-created pane %55 is genuinely alive by the time
+    # the loser re-checks under the lock.
+    _live(monkeypatch, ["%1", "%55"])
     monkeypatch.setattr(tmux, "active_pane_id", lambda wid: "%1")
 
     n = {"count": 0}
@@ -587,3 +589,49 @@ def test_malformed_projects_toml_logs_warning_and_fails_gracefully(
     assert rc == 1
     assert any("proj" in m for m in calls.messages)
     assert any("projects.toml load failed" in str(w[0]) for w in warnings)
+
+
+# ===== Stale secondary: recorded pane_id whose pane already exited =====
+
+
+def test_stale_secondary_pane_routes_to_revive_not_focus_jump(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """A secondary that just exited keeps its pane_id until the next tick
+    nulls it. agent-other must treat recorded-but-not-live as dead: revive
+    (resuming the freshest disk session id) instead of erroring on a
+    focus-jump to a nonexistent pane."""
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    worktree = repo / ".worktrees" / "feat-x"
+    d = worktree / ".local" / ".tmux-agents"
+    d.mkdir(parents=True)
+    _write_projects(tmp_config_dir, f'[proj]\nrepo = "{repo}"\n')
+    agents = [
+        AgentSlot(kind="claude", pane_id="1"),
+        AgentSlot(
+            kind="codex",
+            pane_id="15",
+            session_id="aaaaaaaa-1111-2222-3333-444444444444",
+        ),
+    ]
+    _write_mapping(_mapping(worktree, agents=agents))
+    # Disk carries a NEWER id than the mapping (captured after the last merge).
+    (d / "session-15.id").write_text("bbbbbbbb-1111-2222-3333-444444444444\n")
+    (d / "state-15.json").write_text('{"phase":"idle"}')
+    calls = _stub(monkeypatch)
+    _live(monkeypatch, ["%1"])  # pane %15 is NOT alive
+
+    rc = other_mod.main(["--window-id", WINDOW])
+
+    assert rc == 0
+    assert calls.selected == []  # never tried to focus-jump
+    assert len(calls.respawned) == 1
+    _, cmd = calls.respawned[0]
+    assert "resume bbbbbbbb-1111-2222-3333-444444444444" in cmd  # disk id wins
+
+    updated = windows_mod.read_mapping(WINDOW)
+    assert updated.agents[1].pane_id == "99"
+    assert updated.agents[1].session_id == "bbbbbbbb-1111-2222-3333-444444444444"
+    # The exited pane's files were scrubbed inline (no cleanup pointer existed).
+    assert (worktree, "15") in calls.scrubbed

@@ -1224,3 +1224,22 @@ def test_tick_no_file_no_hint_is_idle(
     batches = _configure_live(monkeypatch, wins)
     state_tick.main([])
     assert _state_code(batches, "@1") == state.IDLE
+
+
+def test_merge_fast_path_still_clears_stale_tombstone(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """A tombstoned window id that comes back with the SAME index and
+    unchanged session ids must still get its orphaned_at cleared — else a
+    later disappearance skips the 90s grace and prunes immediately."""
+    wt = tmp_path / "repo"
+    wt.mkdir()
+    m = dataclasses.replace(
+        _mapping("@1", wt), window_index=1, orphaned_at=time.time() - 5
+    )
+    windows.write_mapping(m)
+    _write_state_json(wt, "23", "running")
+    _configure_live(monkeypatch, [tmux.Window(id="@1", index=1, name="p")])
+    state_tick.main([])
+    got = windows.read_mapping("@1")
+    assert got is not None and got.orphaned_at is None
