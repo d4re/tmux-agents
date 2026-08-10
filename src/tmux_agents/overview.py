@@ -12,7 +12,7 @@ import subprocess
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
-from tmux_agents import paths, state, theme, tmux
+from tmux_agents import paths, phase, state, theme, tmux
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +32,28 @@ TMUX_RESET = "#[default]"
 # ===== Row model =====
 
 
+class SlotState(NamedTuple):
+    """One live agent slot's display letter + overlay count, decoded from a
+    single '|'-delimited segment of a `@state_code` window option."""
+
+    code: str
+    count: int
+
+
 @dataclass
 class Row:
     kind: Literal["header", "agent"]
     repo: str
-    count: int = 0  # header-only
+    count: int = 0  # header-only (live slot count for agent-kind rows in this repo)
     folded: bool = False  # header-only
     win: tmux.Window | None = None  # agent-only
-    code: str = ""  # agent-only
-    overlay_count: int = 0  # agent-only (background/sleeping item count)
+    slots: list[SlotState] = field(default_factory=list)  # agent-only
+
+    @property
+    def combined(self) -> str:
+        """Single display letter for the whole window, combining every live
+        slot via `phase.combined_letter` (highest-priority letter wins)."""
+        return phase.combined_letter([s.code for s in self.slots])
 
 
 def build_rows(
@@ -51,20 +64,13 @@ def build_rows(
     rows: list[Row] = []
     for repo, wins in group_by_repo(windows).items():
         folded = bool(folds.get(repo, False))
-        rows.append(Row(kind="header", repo=repo, count=len(wins), folded=folded))
+        win_slots = [(w, parse_state_code(w.state_code)) for w in wins]
+        total_slots = sum(len(slots) for _, slots in win_slots)
+        rows.append(Row(kind="header", repo=repo, count=total_slots, folded=folded))
         if folded:
             continue
-        for w in wins:
-            code, overlay_count = _parse_state_code(w.state_code)
-            rows.append(
-                Row(
-                    kind="agent",
-                    repo=repo,
-                    win=w,
-                    code=code,
-                    overlay_count=overlay_count,
-                )
-            )
+        for w, slots in win_slots:
+            rows.append(Row(kind="agent", repo=repo, win=w, slots=slots))
     return rows
 
 
@@ -88,26 +94,36 @@ def format_header(row: Row) -> str:
 
 
 def format_line_plain(
-    win: tmux.Window, code: str, count: int, *, mark_active: bool = True
+    win: tmux.Window, slots: list[SlotState], *, mark_active: bool = True
 ) -> str:
     """No-escape row text. The curses TUI paints color via curses attribs and
     passes `mark_active=False` because it handles the cursor marker itself."""
     indent = "> " if (win.active and mark_active) else "  "
-    return f"{indent}{win.index}:{win.name}    {_row_label(code, count)}"
+    label = " | ".join(_row_label(s.code, s.count) for s in slots)
+    return f"{indent}{win.index}:{win.name}    {label}"
 
 
-def _parse_state_code(raw: str) -> tuple[str, int]:
-    """Parse a `@state_code` window-option value (e.g. 'B2', 'Z3', 'R', or '')
-    into (letter, overlay_count). Empty/unknown → idle."""
-    raw = (raw or "").strip()
-    if not raw or raw[0] not in LABEL:
-        return state.IDLE, 0
+def _parse_segment(segment: str) -> SlotState:
+    """Parse a single '|'-delimited segment (e.g. 'B2', 'Z3', 'R', or '') into
+    a SlotState. Empty/unknown → idle slot."""
+    segment = (segment or "").strip()
+    if not segment or segment[0] not in LABEL:
+        return SlotState(state.IDLE, 0)
     try:
-        count = int(raw[1:]) if raw[1:] else 0
+        count = int(segment[1:]) if segment[1:] else 0
     except ValueError:
-        logger.debug("overview: non-integer overlay in state code %r", raw)
+        logger.debug("overview: non-integer overlay in state code %r", segment)
         count = 0
-    return raw[0], count
+    return SlotState(segment[0], count)
+
+
+def parse_state_code(raw: str) -> list[SlotState]:
+    """Parse a `@state_code` window-option value — one or more '|'-joined
+    per-slot codes (e.g. 'R', 'B2', 'R|I', 'B2|R', or '') — into a list of
+    `SlotState`, one per live slot. Each segment is parsed independently, so
+    an unknown/junk segment falls back to an idle slot without poisoning its
+    siblings. Empty input yields a single idle slot."""
+    return [_parse_segment(seg) for seg in (raw or "").split("|")]
 
 
 def _row_label(code: str, count: int) -> str:
@@ -141,7 +157,8 @@ def _summary_counts() -> dict[str, int]:
     counts = empty_counts()
     for w in tmux.list_windows(tmux.SESSION):
         if w.name != tmux.CONTROL_WINDOW:
-            counts[_parse_state_code(w.state_code)[0]] += 1
+            for s in parse_state_code(w.state_code):
+                counts[s.code] += 1
     return counts
 
 
@@ -294,16 +311,17 @@ def activate_target(target: Cursor, folds: dict[str, bool]) -> Cursor:
 
 def _footer_full() -> str:
     return (
-        f"↑↓ select  ↵ open  {tmux.prefix_label()}: a new  k kill  r restore  e rename"
+        f"↑↓ select  ↵ open  {tmux.prefix_label()}: a new  k kill  r restore"
+        "  e rename  o other"
     )
 
 
 def _footer_short() -> str:
-    return f"{tmux.prefix_label()} a/k/r/e"
+    return f"{tmux.prefix_label()} a/k/r/e/o"
 
 
 def _errored_count(rows: list[Row]) -> int:
-    return sum(1 for r in rows if r.kind == "agent" and r.code == state.ERRORED)
+    return sum(1 for r in rows if r.kind == "agent" and r.combined == state.ERRORED)
 
 
 def _restore_alert(n: int) -> str:
@@ -373,7 +391,7 @@ def _row_text(r: Row) -> str:
     if r.kind == "header":
         return format_header(r)
     assert r.win is not None
-    return format_line_plain(r.win, r.code, r.overlay_count, mark_active=False)
+    return format_line_plain(r.win, r.slots, mark_active=False)
 
 
 def _decorate_cursor(text: str) -> str:
@@ -390,9 +408,35 @@ def _color_pair(n: int) -> int:
 
 
 def _agent_attr(r: Row) -> int:
-    code = r.code if r.code in _PAIR_INACTIVE else state.IDLE
+    code = r.combined if r.combined in _PAIR_INACTIVE else state.IDLE
     if r.win is not None and r.win.active:
         return _color_pair(_PAIR_ACTIVE[code]) | curses.A_BOLD
+    return _color_pair(_PAIR_INACTIVE[code])
+
+
+def row_segments(row: Row) -> list[tuple[str, str | None]]:
+    """Pure decomposition of an agent row into (text, letter) segments for
+    per-slot curses coloring: the row prefix (indent + index:name + spacing,
+    letter=None) followed by each slot's `_row_label`, colored by that slot's
+    own letter, with a `" | "` separator (letter=None) between slots."""
+    assert row.win is not None
+    win = row.win
+    segments: list[tuple[str, str | None]] = [(f"  {win.index}:{win.name}    ", None)]
+    for i, s in enumerate(row.slots):
+        if i > 0:
+            segments.append((" | ", None))
+        segments.append((_row_label(s.code, s.count), s.code))
+    return segments
+
+
+def _segment_attr(index: int, letter: str | None) -> int:
+    """Attr for one `row_segments` entry: the prefix (index 0, letter=None)
+    is unstyled, a `" | "` separator (letter=None, index > 0) is dim, and a
+    slot label is colored by its own letter (falling back to idle for
+    letters with no registered color pair, e.g. STARTING)."""
+    if letter is None:
+        return 0 if index == 0 else curses.A_DIM
+    code = letter if letter in _PAIR_INACTIVE else state.IDLE
     return _color_pair(_PAIR_INACTIVE[code])
 
 
@@ -407,14 +451,39 @@ def render_curses(stdscr, rows: list[Row], cursor: Cursor | None):
 
     for y in range(min(len(rows), data_rows)):
         r = rows[y]
-        text = _row_text(r)
         is_cursor = cursor is not None and _row_key(r) == cursor
-        if is_cursor:
-            text = _decorate_cursor(text)
-        attr = _agent_attr(r) if r.kind == "agent" else 0
-        stdscr.addnstr(y, 0, text, max(0, width - 1), attr)
+        # Header rows, the active tmux window's row, and single-slot agent
+        # rows all render as one whole-line write in a single attr (the
+        # combined letter's color) — unchanged from the pre-multi-slot
+        # behavior. Only an *inactive* multi-slot row splits into per-slot
+        # colored segments (the active row's spec-mandated exemption).
+        if (
+            r.kind == "header"
+            or (r.win is not None and r.win.active)
+            or len(r.slots) <= 1
+        ):
+            text = _row_text(r)
+            if is_cursor:
+                text = _decorate_cursor(text)
+            attr = _agent_attr(r) if r.kind == "agent" else 0
+            stdscr.addnstr(y, 0, text, max(0, width - 1), attr)
+            row_at_y[y] = _row_key(r)
+            text_w_at_y[y] = len(text)
+            continue
+
+        segments = row_segments(r)
+        if is_cursor and segments:
+            prefix_text, prefix_letter = segments[0]
+            segments = [(_decorate_cursor(prefix_text), prefix_letter), *segments[1:]]
+        x = 0
+        budget = max(0, width - 1)
+        for i, (text, letter) in enumerate(segments):
+            n = max(0, budget - x)
+            if n > 0:
+                stdscr.addnstr(y, x, text, n, _segment_attr(i, letter))
+            x += len(text)
         row_at_y[y] = _row_key(r)
-        text_w_at_y[y] = len(text)
+        text_w_at_y[y] = x
 
     fy = height - 1
     n_err = _errored_count(rows)
@@ -491,6 +560,17 @@ def kill_at(cursor: Cursor | None) -> None:
     )
 
 
+def other_at(cursor: Cursor | None) -> None:
+    """Start/revive/switch the secondary agent in the cursor's window —
+    mirrors `restore_dead`'s bare background `_popen`, not a popup: the
+    action is a quick pane split/focus-jump, not something needing an
+    interactive surface."""
+    wid = _agent_window_id(cursor)
+    if wid is None:
+        return
+    _popen(["agent-other", "--window-id", wid])
+
+
 def rename_at(cursor: Cursor | None) -> None:
     wid = _agent_window_id(cursor)
     if wid is None:
@@ -521,7 +601,9 @@ def attach_overview_pane(window_id: str) -> None:
     into a two-overview state that revive cannot trivially recover."""
     if tmux.overview_pane_ids(window_id):
         return
-    pane_id = tmux.split_window(window_id, percent=25, command="agent-overview")
+    pane_id = tmux.split_window(
+        window_id, percent=25, command="agent-overview", full_size=True
+    )
     tmux.set_pane_option(pane_id, "@role", "overview")
 
 
@@ -629,6 +711,8 @@ def handle_key(state: TuiState, ch: int) -> None:
         restore_dead()
     elif ch in (ord("e"), ord("E")):
         rename_at(state.cursor)
+    elif ch in (ord("o"), ord("O")):
+        other_at(state.cursor)
 
 
 def handle_mouse(state: TuiState, mx: int, my: int, bstate: int) -> None:

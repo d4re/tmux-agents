@@ -282,7 +282,10 @@ def test_render_curses_footer_hint_present_at_bottom_right(tmp_state_dir, monkey
     overview.render_curses(scr, rows, cursor=None)
     last_row_writes = [w for w in scr.writes if w[0] == 9]
     assert any(
-        "Ctrl-Space" in w[2] and "a new" in w[2] and "r restore" in w[2]
+        "Ctrl-Space" in w[2]
+        and "a new" in w[2]
+        and "r restore" in w[2]
+        and "o other" in w[2]
         for w in last_row_writes
     )
 
@@ -291,7 +294,7 @@ def test_render_curses_footer_hint_truncated_when_narrow(tmp_state_dir, monkeypa
     monkeypatch.setattr(tmux, "list_windows", lambda s: _windows())
     _states(tmp_state_dir)
     rows = overview.build_rows({})
-    scr = _FakeStdscr(height=10, width=20)
+    scr = _FakeStdscr(height=10, width=22)
     overview.render_curses(scr, rows, cursor=None)
     last_row_writes = [w for w in scr.writes if w[0] == 9]
     text = "".join(w[2] for w in last_row_writes)
@@ -418,6 +421,50 @@ def test_footer_reflects_prefix_override(monkeypatch, tmp_state_dir):
     assert "Alt-Space" in text and "Ctrl-Space" not in text
 
 
+def test_render_curses_inactive_dual_row_paints_per_slot_segments(
+    tmp_state_dir, monkeypatch
+):
+    """A dual-slot window that is not the active tmux window splits into
+    per-slot colored segments (running-colored 'running', dim ' | ',
+    idle-colored 'idle') rather than one whole-row write."""
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:x", active=False, state_code="R|I"),
+        ],
+    )
+    rows = overview.build_rows({})
+    scr = _FakeStdscr(height=10, width=80)
+    overview.render_curses(scr, rows, cursor=None)
+    row_writes = [w for w in scr.writes if w[0] == 1]
+    texts = [w[2] for w in row_writes]
+    assert any("running" in t for t in texts)
+    assert any("idle" in t for t in texts)
+    assert any(t == " | " for t in texts)
+    assert len(row_writes) >= 3  # prefix + running + separator + idle
+
+
+def test_render_curses_active_dual_row_renders_as_one_combined_write(
+    tmp_state_dir, monkeypatch
+):
+    """The active tmux window's row is exempt from per-slot segments: it's
+    still one whole-line write colored by the combined letter."""
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:x", active=True, state_code="R|I"),
+        ],
+    )
+    rows = overview.build_rows({})
+    scr = _FakeStdscr(height=10, width=80)
+    overview.render_curses(scr, rows, cursor=None)
+    row_writes = [w for w in scr.writes if w[0] == 1]
+    assert len(row_writes) == 1
+    assert "running | idle" in row_writes[0][2]
+
+
 # ---------- pane attachment ----------
 
 
@@ -428,7 +475,7 @@ def test_attach_overview_pane_splits_and_tags(monkeypatch):
     monkeypatch.setattr(
         tmux,
         "split_window",
-        lambda wid, *, percent, command: (
+        lambda wid, *, percent, command, **kw: (
             splits.append((wid, percent, command)) or "%42"
         ),
     )
@@ -554,6 +601,24 @@ def test_handle_key_renames_current_agent(monkeypatch, tmp_state_dir, key):
     overview.handle_key(s, ord(key))
     assert captured and captured[0][:2] == ["tmux", "-L"]
     assert "agent-rename --window-id @2 %%" in captured[0][-1]
+
+
+def test_handle_key_o_starts_other_agent_on_cursor_window(monkeypatch, tmp_state_dir):
+    s = _two_agent_state(monkeypatch, tmp_state_dir, active_id="@2")
+    s.cursor = Cursor("agent", "@2")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(overview, "_popen", lambda argv: captured.append(argv))
+    overview.handle_key(s, ord("O"))
+    assert captured == [["agent-other", "--window-id", "@2"]]
+
+
+def test_handle_key_o_on_header_is_a_noop(monkeypatch, tmp_state_dir):
+    s = _two_agent_state(monkeypatch, tmp_state_dir)
+    s.cursor = Cursor("header", "api")
+    monkeypatch.setattr(
+        overview, "_popen", lambda argv: pytest.fail("header O should not spawn")
+    )
+    overview.handle_key(s, ord("O"))  # no exception
 
 
 def test_handle_mouse_blank_space_focuses_self(monkeypatch, tmp_state_dir):

@@ -15,7 +15,7 @@ def _render_plain(rows):
     return "\n".join(
         overview.format_header(r)
         if r.kind == "header"
-        else overview.format_line_plain(r.win, r.code, r.overlay_count)
+        else overview.format_line_plain(r.win, r.slots)
         for r in rows
     )
 
@@ -183,8 +183,8 @@ def test_build_rows_carries_state_code_and_overlay_count(monkeypatch):
     )
     rows = overview.build_rows({})
     agent = next(r for r in rows if r.kind == "agent")
-    assert agent.code == state.SLEEPING
-    assert agent.overlay_count == 3
+    assert agent.slots == [overview.SlotState(state.SLEEPING, 3)]
+    assert agent.combined == state.SLEEPING
 
 
 def test_folded_header_uses_right_arrow_glyph(monkeypatch):
@@ -194,6 +194,94 @@ def test_folded_header_uses_right_arrow_glyph(monkeypatch):
     assert "▸ api" in out
     assert "▾ api" not in out
     assert "1:api:feat-x" not in out  # folded agents not rendered
+
+
+def test_parse_state_code_single():
+    assert overview.parse_state_code("R") == [overview.SlotState(state.RUNNING, 0)]
+
+
+def test_parse_state_code_empty_defaults_to_idle():
+    assert overview.parse_state_code("") == [overview.SlotState(state.IDLE, 0)]
+
+
+def test_parse_state_code_junk_defaults_to_idle():
+    assert overview.parse_state_code("Q") == [overview.SlotState(state.IDLE, 0)]
+
+
+def test_parse_state_code_dual_slots():
+    assert overview.parse_state_code("R|I") == [
+        overview.SlotState(state.RUNNING, 0),
+        overview.SlotState(state.IDLE, 0),
+    ]
+
+
+def test_parse_state_code_dual_slots_with_overlay_count():
+    assert overview.parse_state_code("B2|R") == [
+        overview.SlotState(state.BACKGROUND, 2),
+        overview.SlotState(state.RUNNING, 0),
+    ]
+
+
+def test_parse_state_code_junk_segment_inside_multi_slot_is_isolated():
+    """A junk segment inside a multi-slot string only poisons its own slot,
+    not its siblings."""
+    assert overview.parse_state_code("Q|R") == [
+        overview.SlotState(state.IDLE, 0),
+        overview.SlotState(state.RUNNING, 0),
+    ]
+
+
+def test_format_header_counts_live_slots_for_dual_window(monkeypatch):
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:x", state_code="R|I"),
+        ],
+    )
+    rows = overview.build_rows({})
+    header = next(r for r in rows if r.kind == "header")
+    assert header.count == 2
+    assert overview.format_header(header) == "▾ api  (2 agents)"
+
+
+def test_format_line_plain_dual_slot_label():
+    win = tmux.Window(id="@1", index=1, name="api:x")
+    slots = [overview.SlotState(state.RUNNING, 0), overview.SlotState(state.IDLE, 0)]
+    assert overview.format_line_plain(win, slots) == "  1:api:x    running | idle"
+
+
+def test_summary_counts_count_every_slot(monkeypatch):
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [
+            tmux.Window(id="@1", index=1, name="api:x", state_code="R|I"),
+            tmux.Window(
+                id="@2", index=2, name="api:y", state_code=f"{state.BACKGROUND}2|R"
+            ),
+        ],
+    )
+    counts = overview._summary_counts()
+    assert counts[state.RUNNING] == 2
+    assert counts[state.IDLE] == 1
+    assert counts[state.BACKGROUND] == 1
+
+
+def test_row_segments_dual_row_shape():
+    win = tmux.Window(id="@1", index=1, name="win")
+    row = overview.Row(
+        kind="agent",
+        repo="win",
+        win=win,
+        slots=[overview.SlotState(state.RUNNING, 0), overview.SlotState(state.IDLE, 0)],
+    )
+    assert overview.row_segments(row) == [
+        ("  1:win    ", None),
+        ("running", "R"),
+        (" | ", None),
+        ("idle", "I"),
+    ]
 
 
 def test_summary_appends_starting_count_when_present(monkeypatch, tmp_config_dir):
