@@ -61,12 +61,19 @@ case "$1" in
     if [ -n "$pinned" ] && [ -n "$sid" ] && [ "$pinned" != "$sid" ]; then
       exit 0
     fi
-    # GATE: absent-pin capture is DISABLED pending the release-gate
-    # observation (spec Section 2, question 3). Until a SessionStart pins
-    # this pane, no-op entirely — no phase write, no bell. If the gate
-    # passes, replace the early-exit below with pin capture:
-    #   [ -z "$pinned" ] && [ -n "$sid" ] && printf '%s\n' "$sid" > "$pin"
-    [ -z "$pinned" ] && exit 0
+    # Absent-pin capture (release-gate decision: ENABLED, observed in the
+    # field): the first attributable event after a trust-skipped
+    # SessionStart adopts that event's session id as the pin, so tracking
+    # starts mid-session instead of waiting for the next SessionStart.
+    # Residual risk if that first event is subagent-owned with a distinct
+    # id: the child id gets pinned and root events drop until the next
+    # SessionStart re-pins (visible as a stuck letter; /new heals it).
+    # An event with no session id at all stays unattributable: write
+    # nothing rather than track blind.
+    if [ -z "$pinned" ]; then
+      [ -n "$sid" ] || exit 0
+      printf '%s\n' "$sid" > "$pin"
+    fi
     [ "$1" = "waiting" ] && printf '\a'
     write_state "$1"
     ;;

@@ -165,13 +165,12 @@ uses the hooks silently. Upgrading tmux-agents to a version that changes the
 hook script or its registered commands re-triggers that same one-time
 prompt, since the definition hash changed.
 
-One visible consequence: the session that showed the approval prompt stays
-`starting` in the overview for its remainder — its `SessionStart` fired
-*before* you approved, so it was skipped and never replayed, and unpinned
-events deliberately don't write state. After approving, run `/new` inside
-Codex (or quit it and press `Ctrl-Space o` again): the fresh `SessionStart`
-pins the session and tracking starts. Every later session tracks from the
-first event.
+One visible consequence: the session that showed the approval prompt sits
+at `starting` until you approve — its `SessionStart` fired *before* the
+approval, so it was skipped and never replayed. The first hook event after
+approving (your next prompt, a tool call) adopts that session's id and
+tracking starts mid-session. In the unlikely case the pane's letter looks
+stuck after that, `/new` inside Codex re-pins cleanly.
 
 **Codex inside a container — prerequisites.** tmux-agents does not install
 or authenticate Codex for you: the `codex` binary and a working

@@ -310,6 +310,15 @@ turns and answer three questions before shipping:
    still exists (`codex resume` inside the pane lists recent sessions),
    and every session after the one-time trust approval pins normally.
 
+> **Gate outcome (2026-08-10, decided by the maintainer during the
+> Task-18 field test):** absent-pin capture is **enabled** ahead of the
+> formal question-3 observation — live usage is the chosen instrument
+> for answering it. The residual risk (a subagent-owned first event
+> pinning a child id, dropping root events until the next
+> `SessionStart`) is visible as a stuck letter and heals with `/new`;
+> if it is observed in practice, the capture reverts to gated-off.
+> Questions 1–2 remain under observation.
+
 ### Event mapping
 
 Codex has no `Notification` / `SessionEnd` / `StopFailure` /
