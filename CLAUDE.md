@@ -127,6 +127,14 @@ CWD for the rest of the session. Merge / push as usual and stop there.
   bodies live in `src/tmux_agents/hooks/agents.json` (shipped as package
   data) and are provisioned into each worktree's
   `.claude/settings.local.json` by `agent-new`.
+- **Codex** (the second agent kind, `agent_kind.py`) has its own hook
+  family that is deliberately *not* per-worktree: `codex_hooks.py`
+  provisions a user-layer `~/.codex/hooks.json` (host and container home)
+  pointing at a package-owned `codex-hook.sh` kept outside every
+  workspace — `~/.config/tmux-agents/codex-hook.sh` on the host,
+  `<home>/.codex/tmux-agents/codex-hook.sh` in a container. Codex slots
+  never populate the `pending-<pane>/` registry, so they only ever show
+  `R`/`W`/`I`/`X`/`S` — no `B`/`Z`.
 - **Background/scheduled items** are tracked as a *set of self-expiring
   marker files* under `<worktree>/.local/.tmux-agents/pending-<pane>/`,
   one file `<kind>__<id>` per pending/running thing. `write-state.sh`

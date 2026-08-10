@@ -6,13 +6,14 @@ should be kept in sync as the code evolves — see CLAUDE.md.
 
 ## What it is
 
-A Python package plus a tmux config and a hook bundle that lets one user run
-4–6 concurrent Claude Code agents in a single tmux session, each typically
-running inside a project's devcontainer. The package ships eleven CLI entry
-points (`agents`, `agent-new`, `agent-kill`, `agent-rebuild`, `agent-state`,
-`agent-overview`, `agent-rename`, `agent-layout`, `agent-restore`,
-`agent-vscode`, `agent-terminal`)
-that the tmux config wires into keybindings, hooks, and the status line.
+A Python package plus a tmux config and hook bundles that lets one user run
+4–6 concurrent coding agents in a single tmux session — Claude Code and/or
+OpenAI Codex CLI, one or two per window — each typically running inside a
+project's devcontainer. The package ships twelve CLI entry points (`agents`,
+`agent-new`, `agent-kill`, `agent-rebuild`, `agent-state`, `agent-overview`,
+`agent-rename`, `agent-layout`, `agent-restore`, `agent-vscode`,
+`agent-terminal`, `agent-other`) that the tmux config wires into
+keybindings, hooks, and the status line.
 
 ## Isolation model
 
@@ -41,91 +42,109 @@ every other window is one agent.
 
 ## Data flow — the state pipeline
 
-State is the most non-obvious part of the system. It moves through three
-layers:
+State is the most non-obvious part of the system. A window's mapping has one
+or two **agent slots** (Section "Window mapping — schema 2" below); each
+live slot runs the *same* three-layer pipeline independently, and the host
+tick joins their letters into one window-level display. The layers:
 
 ```
-Claude lifecycle hooks               host-side tick                tmux + overview
+agent lifecycle hooks                host-side tick                tmux + overview
 ─────────────────────────            ──────────────────             ───────────────
-SessionStart, UserPromptSubmit,      agent-state                    agent-overview
-Stop, Notification,                  (run every ~1s from            (curses TUI in the
-PostToolUse[ScheduleWakeup/           status-right format)           split-layout pane)
-CronCreate/CronDelete/Agent/Bash],                                  (compact: summary chunk
-SessionEnd                                                           in status-right)
+Claude: SessionStart,                agent-state                    agent-overview
+  UserPromptSubmit, Stop,            (run every ~1s from             (curses TUI in the
+  Notification,                       status-right format)           split-layout pane)
+  PostToolUse[ScheduleWakeup/                                       (compact: summary chunk
+  CronCreate/CronDelete/Agent/Bash],                                 in status-right)
+  SessionEnd
+Codex: SessionStart, UserPromptSubmit,
+  PermissionRequest, PreToolUse,
+  PostToolUse, Stop
    │                                    │
    ▼                                    ▼
-<worktree>/.local/.tmux-agents/    read window mapping ────►  tmux per-window options
-  state-<pane>.json   ────────►    read state JSON +          @state_code (R/W/B<N>/
-  pending-<pane>/<kind>__<id>      scan pending registry      Z<N>/I/X/S) + @state_fg,
-                                   derive letter              read by agent-overview
-                                   set @state_code/@state_fg  via `list-windows -F`
-                                   per window
+<worktree>/.local/.tmux-agents/     for each live slot:      ┐
+  state-<pane>.json    ─────────►   read state JSON +        │  tmux per-window options
+  pending-<pane>/<kind>__<id>       scan pending registry    │  @state_code = joined
+                                     derive letter            │  per-slot codes ("R|I"),
+                                    then, per window:         │  @state_fg = color of the
+                                     join codes, pick the     │  highest-priority letter,
+                                     combined-priority color  ┘  read by agent-overview
+                                     set @state_code/@state_fg   via `list-windows -F`
 ```
 
 Per-step:
 
-1. **Claude hooks** (provisioned by `agent-new` into
-   `<worktree>/.claude/settings.local.json` from `src/tmux_agents/hooks/agents.json`)
-   dispatch on every lifecycle event to a tiny helper script,
+1. **Lifecycle hooks.** Claude's hooks (provisioned per worktree by
+   `agent-new` into `<worktree>/.claude/settings.local.json` from
+   `src/tmux_agents/hooks/agents.json`) dispatch to
    `<worktree>/.local/.tmux-agents/write-state.sh` (also provisioned, from
-   `src/tmux_agents/hooks/write-state.sh`). The script writes a JSON state
-   file *per pane* (the `phase`) and maintains a per-pane registry directory
-   `pending-<pane>/` of self-expiring marker files — one per backgrounded or
-   scheduled thing. `add-`/`del-` subcommands are keyed off the
-   `ScheduleWakeup`, `CronCreate`/`CronDelete`, `Agent`, and `Bash` matchers.
-   Background subagent/Bash markers are reaped two ways: a `clear-completed`
-   subcommand on `UserPromptSubmit` (fast path — when a `<task-notification>`
-   completion arrives as a fresh prompt), and a `reconcile` subcommand on
-   `Stop`/`StopFailure` that diffs the markers against the `background_tasks`
-   live-task set carried in the stop payload (authoritative — also catches
-   completions delivered mid-turn as an attachment, which fire no
-   `UserPromptSubmit`).
-   The pane id is `${TMUX_PANE#%}` —
-   agents must run with `-e TMUX_PANE` exposed so the env var survives
-   `docker exec`. The hook commands themselves are one-liners of the form
-   `sh "$CLAUDE_PROJECT_DIR/.local/.tmux-agents/write-state.sh" <action>`;
-   all shell logic lives in the script.
+   `src/tmux_agents/hooks/write-state.sh`). Codex's hooks are provisioned
+   once at the **user level** (`~/.codex/hooks.json`, host and container
+   home) and dispatch to a package-owned script kept *outside* every
+   workspace — `codex_hooks.py` / `hooks/codex-hook.sh` — see "Codex hook
+   provisioning" below; the two hook families are otherwise independent
+   (different script, different provisioning path, different event set).
+   Both scripts write the same shape of file: a JSON state *per pane*
+   (the `phase`) at `state-<pane>.json`. Only `write-state.sh` also
+   maintains the `pending-<pane>/` marker registry (Section "State
+   classification & overview" below) — Codex has no background/scheduled
+   tracking, so a Codex slot's `pending-<pane>/` is always empty. Both
+   scripts key off `${TMUX_PANE#%}` for the pane id — agents must run with
+   `-e TMUX_PANE` exposed so the env var survives `docker exec` (every
+   default exec template already does this).
 2. **Host-side tick** — `agent-state`, invoked from the tmux status-right
-   format (so it runs every status interval, ~1s), enumerates live
-   windows, looks up each via the `windows/<window_id>.json` mapping
-   written at agent-new time, reads the per-pane JSON phase + scans the
-   `pending-<pane>/` registry (`registry.scan`, which GCs expired markers and
-   returns live background/sleeping counts), derives a single letter via
-   `phase.derive_letter`, and publishes it as the per-window `@state_code`
-   tmux option (along with `@state_fg`/`@state_selected_fg` for colors),
-   batched into a single `tmux source-file -` invocation and skipped
-   entirely on ticks where the (window-id, name, code) fingerprint —
-   `code` includes the B/Z overlay count, so a `B2`→`B3` change still
-   re-publishes — is unchanged from the prior tick (cached at
-   `<state_dir>/tick.cache`). Finally, `agent-state`
-   prints the summary chunk on stdout, so a single `#(agent-state)`
-   substitution in `status-right` fills the status bar (no second
-   `agent-overview` call on the hot path).
+   format (so it runs every status interval, ~1s), enumerates live windows,
+   looks up each via the `windows/<window_id>.json` mapping, and for each
+   **live slot** (`pane_id is not None`) reads that pane's JSON phase +
+   scans its `pending-<pane>/` registry (`registry.scan`), then derives a
+   letter via `phase.derive_letter` (unchanged per-slot logic — a dead
+   secondary's registry is empty, so it always resolves to no B/Z). Per
+   window, the tick joins live slots' letters with `|` into `@state_code`
+   (`"R"` for a single-agent window, `"R|I"`/`"B2|R"` for a dual one; a dead
+   secondary contributes nothing) and sets `@state_fg`/`@state_selected_fg`
+   to the color of the **highest-priority** letter across live slots
+   (`phase.combined_letter`, same `X > W > R > B > Z > I > S` order). Option
+   writes are batched into one `tmux source-file -` and skipped entirely on
+   ticks where the fingerprint (which includes the *full* joined `code`, so
+   a slot joining/leaving or a `B2`→`B3` overlay change still re-publishes)
+   is unchanged from the prior tick (cached at `<state_dir>/tick.cache`).
+   The same tick also does the mapping-mutating housekeeping described in
+   "Lock discipline" below (dead-secondary marking, cleanup-pointer sweep,
+   session-id merge) and finally prints the summary chunk on stdout — the
+   status-bar counts increment once per **live slot**, so a dual-agent
+   window contributes to two buckets.
 3. **Renderer** — `agent-overview` runs a curses TUI in the bottom pane
-   under the split layout; it reads each window's `@state_code` option
-   (carried on the `list-windows -F` row) to render the per-window rows.
+   under the split layout; it parses each window's `@state_code` option
+   (`overview.parse_state_code`, one `SlotState` per `|`-segment) and
+   renders each slot's letter in its own state color, joined by a dim `|`.
    The status-line summary is rendered inside `agent-state` (using counts
    already collected during the tick).
 
-State letters: `R`, `W`, `B`, `Z`, `I`, `X`, `S` (running, waiting,
-background, sleeping, idle, errored, starting). `B` = work executing now
-while otherwise idle (background subagent / background Bash); `Z` = nothing
-running now but it will resume on its own (self-paced wakeup, one-shot or
-recurring cron). Both carry a count suffix rendered as `background·N` /
-`sleeping·N`. Priority `X > W > R > B > Z > I > S` lives in
-`phase.derive_letter`. `S` is the lowest-priority letter,
-used by `agent-new` and `agent-restore` while a placeholder pane is awaiting its
-container/Claude.
+**State letters.** Claude slots: `R`, `W`, `B`, `Z`, `I`, `X`, `S` (running,
+waiting, background, sleeping, idle, errored, starting) as before. **Codex
+slots only ever show `R`/`W`/`I`/`X`/`S`** — no `B`/`Z`: Codex's hooks don't
+maintain the `pending-<pane>/` registry (out of scope per the design spec),
+so `registry.scan` always returns zero counts for a Codex pane and
+`derive_letter` never emits `B`/`Z` for it. `B` = work executing now while
+otherwise idle (background subagent / background Bash, Claude only); `Z` =
+nothing running now but it will resume on its own (self-paced wakeup,
+one-shot or recurring cron, Claude only). Both carry a count suffix
+rendered as `background·N` / `sleeping·N`. Priority `X > W > R > B > Z > I
+> S` lives in `phase.derive_letter` (per slot) and `phase.combined_letter`
+(across a window's live slots). `S` is the lowest-priority letter, used
+while a placeholder pane is awaiting its container/agent.
 
 **`phase_hint`** is a host-side phase field on the `WindowMapping`
-(`str | None`). The state tick consults it only when the per-worktree
-state file (`state-<pane>.json`) does not yet exist — i.e. during the
-interval between "window created" and "Claude's `SessionStart` hook has
-fired." It is set to `"starting"` when the interactive `agent-new` writes
-the initial mapping, drives the `S` letter during pre-worktree startup, and
-is cleared to `None` once `_provision` confirms the real worktree path. On
-a fatal failure before the worktree exists, it is set to `"errored"` to
-show `X`. A present worktree state file always wins over `phase_hint`.
+(`str | None`), consulted only for **slot 0** (the default agent) when its
+per-worktree state file does not yet exist — i.e. during the interval
+between "window created" and "the default agent's `SessionStart` (or
+equivalent) hook has fired." It is set to `"starting"` when the interactive
+`agent-new` writes the initial mapping, drives the `S` letter during
+pre-worktree startup, and is cleared to `None` once `_provision` confirms
+the real worktree path. On a fatal failure before the worktree exists, it
+is set to `"errored"` to show `X`. A present worktree state file always
+wins over `phase_hint`. A **secondary** slot with no state file yet always
+derives `S` regardless of `phase_hint` (`phase_hint` is slot-0-only,
+per-mapping, not per-slot).
 
 **Mapping GC is two-phase.** When the tick sees a `windows/<id>.json`
 whose window is no longer live, it does *not* delete it: it stamps
@@ -143,11 +162,131 @@ still deleted on sight — there's nothing restorable in it.
 
 Pane-dead detection is host-side: one batched `tmux list-panes -s`
 call per tick via `tmux.window_pane_map(session)` returns the set of
-live pane ids per window. A window is flagged `X` either when its
-window id has no live panes (the full-window-dead case) or when the
-mapping's recorded `pane_id` is absent from the live set for its
-window (the pane-level death case — an overview pane keeps the window
-alive after the agent pane exits).
+live pane ids per window. **Pane death is asymmetric by slot**: the
+*default* slot's pane dying flags the whole window `X` (today's
+single-agent behavior, unchanged; restore/revive fixes it) — either because
+the window itself has no live panes, or because the mapping's slot-0
+`pane_id` is absent from the window's live set (an overview pane, or a live
+secondary, keeps the window alive after the default agent pane exits). A
+*secondary* slot's pane dying does **not** flag the window `X`; it is
+handled by the dead-slot transaction in "Lock discipline" below.
+
+## Window mapping — schema 2
+
+`WindowMapping` (`windows.py`) is `schema: 2`: it carries an `agents: list[AgentSlot]`
+instead of a single flat `pane_id`/`claude_session_id` pair. Slot 0 is the
+project's **default agent** (`Project.agent`, `claude` or `codex`); slot 1,
+when present, is the **secondary** started by `Ctrl-Space O`.
+
+```json
+{
+  "project": "api", "branch": "feature-x", "host_worktree": "/…", "pane_id": "12",
+  "schema": 2,
+  "agents": [
+    {"kind": "claude", "pane_id": "12", "session_id": "uuid-…"},
+    {"kind": "codex",  "pane_id": null, "last_pane_id": "15", "session_id": "0199-…"}
+  ]
+}
+```
+
+Each `AgentSlot` is `{kind, pane_id, session_id?, last_pane_id?}`, pane ids
+stored **stripped** (no `%`), matching the existing convention. Terminology:
+a **dead slot** means exactly one thing — a *secondary* slot persisted with
+`pane_id: null`. `last_pane_id` is an orthogonal, optional
+cleanup-pending pointer (which pane's per-pane files still need deleting);
+it can outlive the death that set it (crash recovery) and a revive
+deliberately does not clear it. A default (slot 0) pane dying is **not** a
+dead slot — it renders `X` and is fixed by restore/revive, exactly as
+before schema 2. **A mapping with only slot 0 is the normal single-agent
+window**; the absence of a secondary never implies repair is needed.
+
+**Back-compat.** `WindowMapping.__post_init__` synthesizes a single
+`claude` slot from the legacy flat `pane_id`/`claude_session_id` fields
+when `agents` is absent, so old on-disk snapshots restore untouched.
+`to_dict()` keeps writing the legacy `pane_id` mirrored from slot 0, and
+mirrors `claude_session_id` only when slot 0's kind is `claude` — a
+downgrade to a pre-schema-2 build must never `claude --resume` a Codex
+session id. Documented limitation: downgrading past a codex-default
+window makes the old version start a fresh Claude session there instead
+of resuming anything.
+
+## Lock discipline
+
+Three locks, never nested in more than one order:
+
+- **Two `fcntl` locks** (`locks.py`) used for window mapping and per-worktree
+  cleanup (detailed below).
+- **`<config_dir>/codex-hooks.lock`** — guards host-side Codex hook
+  (re)provisioning in `codex_hooks.ensure_host()`. This lock never nests with
+  the other two; it's held only during `ensure_host()`'s atomic script +
+  hooks.json writes.
+
+The `fcntl` locks are:
+
+- **`<window_id>.json.lock`** (`paths.window_mapping_lock`) — a stable
+  sibling of `windows/<window_id>.json`, never the JSON file itself (its
+  inode is replaced by every atomic write, which would let a second
+  locker in). Taken **only** inside `windows.update_mapping` /
+  `windows.delete_mapping`, each call self-contained: read, apply the
+  callback, tmp+rename. No caller holds it across other work.
+- **`<worktree>/.local/.tmux-agents/.cleanup.lock`** (`paths.worktree_cleanup_lock`)
+  — guards **destructive per-pane file cleanup and slot-liveness
+  publication** for one worktree; deliberately *not* the lifecycle hooks'
+  own state/session writes or the registry's marker GC, which stay
+  lock-free.
+
+**Global order: cleanup lock first, mapping lock second, always.** Because
+the mapping lock is acquired only inside the self-contained
+`update_mapping`/`delete_mapping` calls, no code path holds it while trying
+to acquire the cleanup lock, and nothing calls `update_mapping`
+re-entrantly — so the inversion deadlock (one worker cleanup→mapping,
+another mapping→cleanup) can't happen by construction.
+
+Holders, in order of how often they run:
+
+- **The tick's dead-secondary transaction** (`state_tick._mark_secondary_dead`):
+  when a secondary's pane has died, takes the cleanup lock, then a single
+  guarded `update_mapping` call that re-reads the mapping and mutates the
+  slot **only if it still holds the observed `(kind, pane_id)`** (a
+  compare-and-set) — if `agent-other` revived it in between, this is a
+  no-op. On a hit: merge the pane's `session-<pane>.id` into the slot,
+  set `pane_id: null`, `last_pane_id: <old pane>`, then (cleanup lock still
+  held) delete that pane's per-pane files.
+- **The tick's cleanup-pointer sweep** (`_sweep_cleanup_pointers`): for
+  every slot still carrying `last_pane_id` (live or dead), re-derives its
+  collision inputs fresh under the lock and resolves each pending pointer
+  one of three ways. **Mapped elsewhere** — `last_pane_id` is now claimed
+  by any slot of the same worktree, live or dead (a second window can map
+  the same worktree): ownership of the on-disk files already transferred
+  to that slot, so the sweep clears ONLY its own pointer via
+  `update_mapping` (a compare-and-set — an overlapping older sweep can't
+  clear a newer death's pointer) and deletes nothing. **Unmapped but
+  tmux-alive** — genuinely ambiguous (the liveness isn't explained by any
+  mapping yet): skip entirely, retry next tick. **Otherwise** — scrub, then
+  verify via `startup.pane_files_absent` that the state/session/pending
+  files are actually gone before clearing the pointer; a `scrub_pane_files`
+  that silently left a survivor (e.g. `rmtree` swallowing a permission
+  error) keeps its pointer for a retry instead of losing it. The
+  complementary half of the aliasing guard: every pane-spawn path
+  (`agent-new`, `agent-other`, restore) scrubs stale per-pane files for its
+  *assigned* pane id against the resolved worktree path immediately before
+  launching into it — so even a missed sweep can't leave a recycled pane id
+  pointing at a dead agent's stale files. (`rebuild` is deliberately not in
+  that list — see its own section below.)
+- **The tick's dead-window prune** (`_prune_windows_and_worktree_files`):
+  for each dead window's mapping, takes that worktree's cleanup lock and
+  re-derives the same protected set fresh under it — pane ids still
+  claimed by a live window's mapping of the same worktree, union every
+  currently-alive tmux pane id session-wide — before scrubbing each slot's
+  `pane_id` and `last_pane_id`. A pane id in the protected set survives
+  pruning even though the dead window's own mapping file is still removed
+  (via `windows.delete_mapping`, not a bare unlink).
+- **`agent-other`'s start branch** (Section "Start/switch — `agent-other`"
+  below): holds the cleanup lock across eligibility re-check, split,
+  scrub, respawn, and publish (a single `update_mapping` call as the last
+  step) — so two near-simultaneous invocations serialize; the loser
+  re-reads a mapping whose secondary is now live and falls through to a
+  focus-jump instead of splitting a second pane.
 
 ## Spawn flow — `agent-new`
 
@@ -225,8 +364,8 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    Offline runs degrade to the cached `origin/<base>` with a warning.
    All git invocations run via `docker exec` for container projects.
    The two paths that hand an agent a checkout **without** creating a
-   fresh worktree — no-branch mode (runs Claude in `<repo>` as-is) and
-   reuse of an existing `.worktrees/<branch>` — instead run
+   fresh worktree — no-branch mode (runs the default agent in `<repo>`
+   as-is) and reuse of an existing `.worktrees/<branch>` — instead run
    `worktree.check_freshness`: a best-effort `git fetch origin <default>`
    + `git rev-list --count HEAD..origin/<default>` that emits a stage
    **warning** (holding the pane for Enter) when the checkout is behind,
@@ -235,15 +374,22 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    **After resolve**, the mapping is rewritten with the real
    `host_worktree` and `phase_hint=None` (the worktree state file now
    takes over).
-4. **Provision hooks.** `provisioning.provision_settings` merges
+4. **Provision Claude hooks.** `provisioning.provision_settings` merges
    `hooks/agents.json` into `<worktree>/.claude/settings.local.json`
    (idempotent; non-fatal on failure — emits a warning to the log).
-5. **Respawn.** Once the log file is closed:
-   - No warnings → `startup._respawn_with_retry` swaps the pane into
-     the real `exec_cmd` (Claude).
+5. **Provision Codex hooks.** `codex_hooks.ensure_host()` (host projects)
+   or `codex_hooks.ensure_container(container_name, user)` (container
+   projects) — idempotent, non-fatal on failure. Runs **regardless of the
+   project's default agent kind**, so the secondary is already provisioned
+   the first time `Ctrl-Space O` is pressed. Digest + canonical-structure
+   check, not presence: a mutated script or hand-edited `hooks.json` heals
+   on the next call rather than needing a version sidecar.
+6. **Respawn.** Once the log file is closed:
+   - No warnings → `startup._respawn_with_retry` swaps the pane into the
+     real `exec_cmd.build(...)` for slot 0's kind (`proj.agent`).
    - Non-fatal warning → `startup.hold_pane_then_exec` shows the log
-     plus a "press Enter to launch Claude" prompt (pane state shows `W`),
-     then `exec`s into Claude on Enter.
+     plus a "press Enter to launch" prompt (pane state shows `W`), then
+     `exec`s into the agent on Enter.
 
 Failure modes:
 - **Fatal before worktree exists** → `startup.show_static_text` replaces
@@ -261,30 +407,35 @@ shell-outs to the dedicated module rather than inline.
 
 | Module | Owns |
 |---|---|
-| `paths.py` | All filesystem locations. Env-overridable via `TMUX_AGENTS_CONFIG_DIR` / `TMUX_AGENTS_STATE_DIR`. Every path used elsewhere goes through this. |
+| `paths.py` | All filesystem locations. Env-overridable via `TMUX_AGENTS_CONFIG_DIR` / `TMUX_AGENTS_STATE_DIR`. Every path used elsewhere goes through this, including the two lock paths (`window_mapping_lock`, `worktree_cleanup_lock`). |
 | `state.py` | The seven display-letter constants (`R`/`W`/`B`/`Z`/`I`/`X`/`S`). |
-| `phase.py` | Bridges hook-written `phase` JSON + registry background/sleeping counts + `pane_alive` → display letter, applying the priority rule. |
-| `registry.py` | Scans a pane's `pending-<pane>/` marker dir, computes each marker's effective expiry (exact from `scheduledFor`/cron-expr where possible, heuristic timeout otherwise), GCs expired ones, returns live background/sleeping counts. Uses `croniter` for one-shot cron next-fire (host-side, local TZ). |
+| `phase.py` | Bridges hook-written `phase` JSON + registry background/sleeping counts + `pane_alive` → per-slot display letter (`derive_letter`), plus `combined_letter` (highest-priority letter across a window's live slots), applying the same `X>W>R>B>Z>I>S` priority rule at both levels. |
+| `agent_kind.py` | The two agent kinds (`CLAUDE`, `CODEX`) and per-kind knowledge: `executable(kind)`, `resume_args(kind, session_id)` (claude: ` --resume <id>` flag; codex: ` resume <id>` subcommand), `other(kind)` (the opposite kind), and the `AGENT_MARKER` (`TMUX_AGENTS_AGENT`) env-var name exported by every default exec template. Nothing else hardcodes `"claude"`/`"codex"`. |
+| `locks.py` | The single `locked(path)` `fcntl` context manager for the two `fcntl` locks (window mapping and per-worktree cleanup). Docstring states the global order: cleanup lock first, mapping lock second. `codex-hooks.lock` is also a `fcntl` lock but is never held alongside the other two. |
+| `registry.py` | Scans a pane's `pending-<pane>/` marker dir, computes each marker's effective expiry (exact from `scheduledFor`/cron-expr where possible, heuristic timeout otherwise), GCs expired ones, returns live background/sleeping counts. Uses `croniter` for one-shot cron next-fire (host-side, local TZ). Claude-only in practice — Codex slots never populate this directory. |
 | `theme.py` | Color palette. Dark + light defaults, optional `theme.toml` overrides, derived ANSI/tmux/contrast variants for active-row inversion. Cached per-process. |
-| `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, split, kill, option setters. |
-| `windows.py` | The `<config_dir>/windows/<window_id>.json` mapping that lets the host tick translate a tmux window into the worktree path + pane id its hooks write under. `forget(window_id)` is the single teardown path (mapping + that pane's state/session/pending files); it is also what removes an agent from the restore snapshot, so only `agent-kill` and the tick's grace-period GC may call it. |
-| `config.py` | `projects.toml` loader. Resolves `container` vs `devcontainer = true`, fills in defaults (`up_cmd`, `exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
-| `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), `ensure_up` (runs `up_cmd` once if down), and `rebuild` (force-recreate: devcontainer projects append `--remove-existing-container` [+ `--build-no-cache`] to `up_cmd`; named-container projects `docker rm -f` then re-run `up_cmd`). |
-| `exec_cmd.py` | Shared builder `build(proj, *, branch, claude_session_id, container_name, label)` for the pane launch command, injecting ` --resume <id>` via the `{resume_args}` placeholder. Used by both `agent-restore` and `agent-rebuild` so resume semantics stay identical. |
+| `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, kill, option setters, `prefix_label` (humanized, process-cached prefix name for hint strings), and `split_window(target, *, percent, command, before=False, horizontal=False, full_size=False)` — `horizontal` → `-h` (agent-other's 50/50 side-by-side), `full_size` → `-f` (the overview's full-width bottom split under a dual-agent window). |
+| `windows.py` | `WindowMapping`/`AgentSlot` — the `<config_dir>/windows/<window_id>.json` mapping, schema 2 (`agents: list[AgentSlot]`, slot 0 = default agent; see "Window mapping — schema 2" above). `update_mapping(window_id, fn)` / `delete_mapping` are the only mutators, each taking `window_mapping_lock` internally. `__post_init__` (triggered via `from_dict` construction) synthesizes a legacy single-claude-slot mapping when `agents` is absent. `forget(window_id)` tears down mapping + slot files together; it removes an agent from the restore snapshot, so only `agent-kill` and the tick's grace-period GC may call it. |
+| `config.py` | `projects.toml` loader. Resolves `container` vs `devcontainer = true`, fills in defaults (`up_cmd`, `exec_cmd`, `codex_exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`). Reads top-level `default_agent` and per-project `agent`/`codex_exec_cmd` (both validated against `agent_kind.KINDS`, `ConfigError`/exit 2 otherwise); `Project.exec_cmd_for(kind)` and `exec_cmd_explicit`/`codex_exec_cmd_explicit` (the latter pair tells `agent-other` whether its executable pre-flight is meaningful). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
+| `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), `ensure_up` (runs `up_cmd` once if down), `exec_capture` (run a command inside the container as a given user and capture stdout — used by `agent-other`'s executable pre-flight and by `codex_hooks.ensure_container`), and `rebuild` (force-recreate: devcontainer projects append `--remove-existing-container` [+ `--build-no-cache`] to `up_cmd`; named-container projects `docker rm -f` then re-run `up_cmd`). |
+| `exec_cmd.py` | Shared builder `build(proj, *, branch, session_id, container_name, kind=agent_kind.CLAUDE, label="")` for the pane launch command, injecting the kind's resume snippet via the `{resume_args}` placeholder (`agent_kind.resume_args`). Used by `agent-new`, `agent-other`, `agent-restore`, and `agent-rebuild` so resume semantics stay identical across every spawn path. |
 | `worktree.py` | `git worktree add/remove`. `_resolve_base()` determines the commit-ish for new worktrees (fetch `origin/<default>` → cached ref → HEAD fallback). For container projects, runs git via `docker exec` so the worktree's internal `.git` pointers are container paths. |
-| `provisioning.py` | Idempotent merge of `hooks/agents.json` into `<worktree>/.claude/settings.local.json`. Versioned by package version so upgrades replace stale hook groups. |
+| `provisioning.py` | Idempotent merge of `hooks/agents.json` into `<worktree>/.claude/settings.local.json`. Versioned by package version so upgrades replace stale hook groups. Claude-only; Codex's user-level provisioning is `codex_hooks.py`. |
+| `codex_hooks.py` | User-layer Codex hook provisioning: `ensure_host()` / `ensure_container(container_name, user)`. Writes the package-owned `codex-hook.sh` **outside every workspace** (`~/.config/tmux-agents/codex-hook.sh` host, `<container home>/.codex/tmux-agents/codex-hook.sh` container) and merges owned entries into `~/.codex/hooks.json` (host and container home) by exact structural command match (`sh '<abs path>/codex-hook.sh' <action>` — matches regardless of which action word, so a renamed/removed action from an older package version is still recognized and cleaned up). "Ensure" verifies script digest + canonical owned-subset structure, not mere presence, so a mutated script or hand-edited hooks file self-heals on the next call; container writes go through a unique-`mktemp`-then-rename helper (no lock needed — content is deterministic per package version). |
 | `hooks/agents.json` | Package data: the hook *dispatch* table (`tui: fullscreen` + per-event invocation of `write-state.sh`). Shipped, not generated. |
-| `hooks/write-state.sh` | Package data: the actual shell body the hooks invoke. Provisioned per worktree at `<worktree>/.local/.tmux-agents/write-state.sh`. Single source for the phase-JSON write + the registry `add-`/`del-` marker subcommands (extracting ids/signals from the hook payload via constrained sed). All counting/expiry/cron-parsing is host-side in `registry.py`. |
+| `hooks/write-state.sh` | Package data: the actual shell body the *Claude* hooks invoke. Provisioned per worktree at `<worktree>/.local/.tmux-agents/write-state.sh`. Single source for the phase-JSON write + the registry `add-`/`del-` marker subcommands (extracting ids/signals from the hook payload via constrained sed). All counting/expiry/cron-parsing is host-side in `registry.py`. |
+| `hooks/codex-hook.sh` | Package data: the shell body the *Codex* hooks invoke (provisioned by `codex_hooks.py`, not per-worktree). Phase writes (`running`/`waiting`/`idle`) + `init` (session-id pin) + bell on `waiting`; no registry markers. No-ops unless `TMUX_PANE` is set, `$PWD/.local/.tmux-agents` exists, and `TMUX_AGENTS_AGENT=1` is exported — the last guard is what stops a manual `codex` run inside `agent-terminal` from corrupting a pane's phase/pin. |
 | `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill` / `agent-rebuild`. No tmux/project knowledge. |
-| `overview.py` | Row model (header / agent), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, state-colored rendering, click hit-testing, keyboard dispatch (↑↓ ↵ a/k/r/e, uppercase aliases), `attach_overview_pane` (`@role=overview`), and content-fit auto-resize (`desired_pane_height` + `refit_self_pane`, publishing `@overview_rows` for the window-resized hook's `overview-refit` script). The TUI auto-tracks the active window unless the user moved the cursor. |
+| `overview.py` | Row model (header / agent, with `slots: list[SlotState]` per agent row), `parse_state_code` (splits a `|`-joined `@state_code` into one `SlotState` per live slot), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, per-slot state-colored rendering (letters joined by a dim `|`), click hit-testing, keyboard dispatch (↑↓ ↵ a/k/r/e/o, uppercase aliases), `attach_overview_pane` (`@role=overview`, idempotent), and content-fit auto-resize (`desired_pane_height` + `refit_self_pane`, publishing `@overview_rows` for the window-resized hook's `overview-refit` script). The TUI auto-tracks the active window unless the user moved the cursor. Repo headers count **live slots**, not windows (`format_header`'s `N agent(s)`). |
 | `ssh_forward.py` | Probes + pump spawn for SSH agent forwarding. Spawns the pump as `python -m tmux_agents._ssh_pump_script`; the pump delivers the relay into the container as plain files (no inlining). |
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
 | `_ssh_pump_script.py` | Host-side pump. For each in-container SSH op, opens a fresh connection to the host's `$SSH_AUTH_SOCK` and splices it. |
 | `_ssh_relay_script.py` | In-container relay. Bind-or-exit dedup at `/tmp/tmux-agents-ssh.sock`, accepts client connections, splices each through stdin/stdout to the pump. |
-| `startup.py` | Shared spawn/restore primitives used by both `agent-new` and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `_respawn_with_retry` (fork-safe respawn with backoff), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec). |
+| `startup.py` | Shared spawn/restore primitives used by `agent-new`, `agent-other`, and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `_respawn_with_retry` (fork-safe respawn with backoff), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec), `scrub_pane_files(worktree, pane_id)` (delete a pane's state/session/pending files under the resolved worktree — required by every spawn path, and by the tick's dead-slot sweep, before (re)launching an agent into a pane id that may have been recycled). |
 | `progress.py` | Per-stage progress display. `Reporter` writes to a single output stream; `MultiReporter` fans out to N reporters for events shared across restore's project groups. Symbols: `▸` info / `✓` success / `!` warning (non-fatal) / `✗` fatal failure. Both `agent-new --provision` and `agent-restore` write each window's progress to `<state_dir>/spawn-<window_id>.log` (`paths.spawn_log`); the placeholder pane runs `tail -F <log>` and is replaced by `respawn-pane` when the worker finishes. |
-| `commands/restore.py` | The `agent-restore` worker. Snapshot reading + validation, project grouping, placeholder pre-creation, container ensure-up + per-entry respawn, failure logging + error display. Imports shared primitives from `startup.py`. |
-| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when any agent is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): fork/setsid/detach-stdio (same as `agent-new --provision` — otherwise tmux paints the worker's output, e.g. `devcontainer up` JSON, over the active pane in view mode), then show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump, then re-exec each pane via `exec_cmd.build` (`claude --resume <id>`). Per-pane failures isolated; container-rebuild failure marks every pane `X`. |
+| `commands/restore.py` | The `agent-restore` worker. Snapshot reading + validation, per-slot plan (`EntryKind` for slot 0, independent `SlotAction` for an existing secondary), a global session-id harvest barrier across every slot of every entry before any pane is touched, project grouping, placeholder pre-creation (dual split for two-slot entries), container ensure-up + per-entry respawn (kind-aware, via `exec_cmd.build`), Codex hook ensure-provisioned, failure logging + error display. Imports shared primitives from `startup.py`. |
+| `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies, tiered confirm (default-No when **any live slot** is `R`/`W`/`B`), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): fork/setsid/detach-stdio (same as `agent-new --provision` — otherwise tmux paints the worker's output, e.g. `devcontainer up` JSON, over the active pane in view mode), then show `tail -F` progress in each affected pane, `container.rebuild`, respawn the SSH pump, Codex hook ensure-provisioned, then re-exec **every live slot's** pane via `exec_cmd.build` (kind-aware resume). Per-pane failures isolated; container-rebuild failure marks every pane `X`. Deliberately does **not** scrub pane files: every slot it touches is a live, still-mapped pane being resumed in place, not a possibly-recycled id, so its state/session files must survive the rebuild. |
+| `commands/other.py` | `agent-other`. One smart action on the active window (Section "Start/switch — `agent-other`" below): notice-and-stop when there's no mapping or the default pane is dead; focus-jump when both slots are live; otherwise ensure-provisioned + executable pre-flight + placeholder-first split + scrub + respawn + publish-last, all under the per-worktree cleanup lock. |
 | `commands/*.py` | Thin CLI orchestrators (one per `[project.scripts]` entry). Logic lives in the modules above. |
 
 ### How `_ssh_*.py` reach the container
@@ -304,16 +455,17 @@ delivered-file import path under `python -E -S`.
 | Command | Owner | Purpose |
 |---|---|---|
 | `agents` | `commands/launcher.py` | Probe live session / snapshot, prompt user on stale snapshot, orchestrate restore handoff (`agent-restore --background`) before `execvp` into `tmux attach`. Falls through to plain `new-session -A` when no snapshot exists. Primary entry point. |
-| `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"`, attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve (or a `check_freshness` base-staleness check in no-branch mode) + hooks provision, writing progress to the spawn log; respawn the placeholder into Claude on success, hold for Enter on warning (`W`, e.g. a checkout behind `origin/<default>`), show error pane on fatal failure (`X`). |
-| `agent-kill [<window>] [--prune-worktree] [--force]` | `commands/kill.py` | fzf picker by default; can target by `--window-id`. Optional `git worktree remove` (interactive force-retry on dirty). |
-| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when an agent is actively working), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, `respawn-pane` each pane into `claude --resume <id>`. Bound to `Ctrl-Space b`. |
+| `agent-new [<project> [<branch>]]` | `commands/new.py` | Two-mode entry point. **Interactive** (popup): fzf-pick project/branch, create window immediately with a placeholder pane tailing the spawn log (`spawn-<id>.log`), write mapping with `phase_hint="starting"` and slot 0's kind (`proj.agent`), attach overview pane, select window, spawn detached `--provision` worker, return. **`--provision` worker**: fork/setsid/detach-stdio, then container ensure-up + SSH pump + worktree resolve (or a `check_freshness` base-staleness check in no-branch mode) + Claude hooks provision + Codex hooks ensure-provisioned (always, regardless of `proj.agent` — readies the secondary before it's ever requested), writing progress to the spawn log; respawn the placeholder into the default agent on success, hold for Enter on warning (`W`, e.g. a checkout behind `origin/<default>`), show error pane on fatal failure (`X`). |
+| `agent-kill [<window>] [--prune-worktree] [--force]` | `commands/kill.py` | fzf picker by default; can target by `--window-id`. Kills the whole window (every live slot). Optional `git worktree remove` (interactive force-retry on dirty). |
+| `agent-rebuild [<project>] [--project N] [--no-cache] [--yes] [--worker]` | `commands/rebuild.py` | Rebuild a project's shared container and resume its agents. **Interactive** (popup): fzf-pick an eligible project (devcontainer, or named container with `up_cmd`) showing its live agent tally, warn+confirm (default-No when any live slot is actively working — `R`/`W`/`B`), then spawn the detached `--worker` via `run-shell -b` so it survives the popup closing. **`--worker`**: show `tail -F` progress in each affected pane, `container.rebuild` (force-recreate), respawn the SSH pump, Codex hooks ensure-provisioned, `respawn-pane` **every live slot's** pane via `exec_cmd.build` (kind-aware resume). Bound to `Ctrl-Space b`. |
 | `agent-state` | `commands/state_tick.py` | Single tick of the host poll. Wired into `status-right` so tmux runs it every status interval. |
 | `agent-overview` | `commands/overview.py` | Curses TUI for the split-layout bottom pane. The status-line summary is emitted inline by `agent-state` — `render_summary` is called as a function, not via this CLI. |
 | `agent-rename --window-id <id> [--from-hook] <name>` | `commands/rename.py` | Replace the `:branch` half of `<repo>:<branch>`. Explicit (non-hook) renames set the `@pinned` window option; `agent-new` and `agent-restore` also set it when a branch is supplied at creation. `--from-hook` is the `pane-title-changed` mode that silently no-ops on ctrl/`@pinned`/unknown windows or empty names — so the hook keeps tracking Claude's titles on unpinned windows but never overwrites a branch label. |
-| `agent-layout` | `commands/layout.py` | Toggle persistent layout file (`<state_dir>/layout`) between `split` and `compact`; rebuilds existing windows accordingly. |
-| `agent-restore [--background]` | `commands/restore.py` | Read snapshot, pre-create placeholder windows (with overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump per container project, `respawn-pane` each pane with `claude --resume <id>`. Triggered automatically by the launcher; runnable manually for partial-failure retry or dead-pane recovery, bound to `Ctrl-Space r`. |
+| `agent-layout` | `commands/layout.py` | Toggle persistent layout file (`<state_dir>/layout`) between `split` and `compact`; rebuilds existing windows accordingly — kills only `@role=overview` panes going to `compact` (never by pane index), so a dual-agent window's two agent panes both survive. |
+| `agent-restore [--background]` | `commands/restore.py` | Read snapshot, harvest every slot's on-disk session id (barrier, before any pane is touched), pre-create placeholder windows (dual split for two-slot entries; overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump per container project, ensure Codex hooks, `respawn-pane` each slot with its own kind's resume command. Triggered automatically by the launcher; runnable manually for partial-failure retry, dead-pane recovery, or a secondary-only repair, bound to `Ctrl-Space r`. |
 | `agent-vscode --window-id <id>` | `commands/vscode.py` | Open the current agent's worktree in VS Code. Host projects → `code <host_worktree>`. Container / devcontainer projects → `code --folder-uri vscode-remote://attached-container+<hex>/<container_workdir>`, reattaching to the running container resolved by `container.current_name` (no rebuild, no second container). Resolves the `code` binary via `shutil.which` first, then falls back to a top-level `code_path` in `projects.toml` (default: `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`). Bound to `Ctrl-Space v`. |
-| `agent-terminal --window-id <id>` | `commands/terminal.py` | Pop up a shell in the active agent's context. Host projects → `os.chdir(host_worktree)` then `exec $SHELL -l` (fallback `/bin/bash`). Container / devcontainer projects → `os.execvp("docker", ["exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE", "-u", user, "-w", workdir, name, "bash", "-il"])`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space t` via `display-popup -E`. |
+| `agent-terminal --window-id <id>` | `commands/terminal.py` | Pop up a shell in the active agent's context. Host projects → `os.chdir(host_worktree)` then `exec $SHELL -l` (fallback `/bin/bash`). Container / devcontainer projects → `os.execvp("docker", ["exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE", "-u", user, "-w", workdir, name, "bash", "-il"])`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space t` via `display-popup -E`. Note: this shell carries `TMUX_PANE` but **not** the `TMUX_AGENTS_AGENT` marker, which is deliberate — see "Honest limitations" below. |
+| `agent-other --window-id <id>` | `commands/other.py` | Start, revive, or focus-switch the window's **secondary** agent (the kind other than slot 0's — Claude↔Codex). No mapping / default slot dead → `display-message` notice, no-op. Both slots live → focus-jump between the two agent panes. Secondary absent or dead → ensure-provisioned + executable pre-flight (skipped for a custom `exec_cmd`/`codex_exec_cmd`) + placeholder-first split/scrub/respawn/publish-last, under the per-worktree cleanup lock. Bound to `Ctrl-Space o` (and `o` in the focused overview pane; uppercase aliases work too). |
 
 ## Supported features
 
@@ -326,24 +478,44 @@ delivered-file import path under `python -E -S`.
 - **Image / Dockerfile devcontainer.** `devcontainer = true` — resolved by
   the `devcontainer.local_folder=<repo>` label that VS Code's Dev
   Containers extension and the `devcontainer` CLI stamp. `up_cmd`,
-  `exec_cmd`, and `container_workdir` (=`/workspaces/<repo-basename>`)
-  default to the canonical devcontainer-CLI invocations.
-- **Host-only.** No container fields. `exec_cmd` is optional; the default
-  is `cd {workdir} && exec claude{resume_args}`.
+  `exec_cmd`/`codex_exec_cmd`, and `container_workdir`
+  (=`/workspaces/<repo-basename>`) default to the canonical
+  devcontainer-CLI invocations.
+- **Host-only.** No container fields. `exec_cmd`/`codex_exec_cmd` are
+  optional; the defaults are `cd {workdir} && TMUX_AGENTS_AGENT=1 exec
+  claude{resume_args}` / `... exec codex{resume_args}`.
 
 Substitutions: `{repo}` → host repo path, `{container}` → resolved name,
 `{workdir}` → host path or container path with `.worktrees/<branch>`
-appended, `{resume_args}` → empty for fresh agents, ` --resume <session_id>`
-(with leading space) when `agent-restore` is reviving a previous Claude
-conversation.
+appended, `{resume_args}` → empty for a fresh agent, a kind-specific resume
+snippet (leading space included) when reviving a conversation —
+` --resume <session_id>` for Claude, ` resume <session_id>` for Codex
+(`agent_kind.resume_args`).
+
+### Agent kinds
+
+Top-level `default_agent = "claude" | "codex"` (absent → `"claude"`,
+zero-migration) and per-project `agent` override which kind is the
+project's **default** (slot 0). Invalid values fail config loading (exit
+2). `agent_kind.py` is the single place that owns the two kind names,
+their executable name (`claude`/`codex`, identical to the kind name), and
+their resume-arg spelling — nothing else hardcodes either string. A
+project's **secondary** agent (started by `Ctrl-Space O`) is always the
+other kind; there is no third kind, though the design leaves room for one.
 
 ### Layouts
 
-- **Split (default).** Each agent window has a top pane (Claude) and a
-  bottom pane running `agent-overview`. The bottom pane is
-  identical across windows, so the global overview is always visible. The
-  pane is tagged `@role=overview` so the `MouseDown1Pane` binding
-  forwards clicks to it without stealing pane focus from the agent.
+- **Split (default).** Each agent window has a top pane (one or two agent
+  panes, side by side if both are live) and a bottom pane running
+  `agent-overview`. `attach_overview_pane` always makes it a **full-width**
+  bottom split (`-f -v`), so it spans both agent panes in a dual window
+  instead of nesting under one of them; for a single-agent window this is
+  the same result as before. The bottom pane is identical across windows,
+  so the global overview is always visible. The pane is tagged
+  `@role=overview` so the `MouseDown1Pane` binding forwards clicks to it
+  without stealing pane focus from the agent, and `attach_overview_pane`
+  is idempotent (no-op if the window already has one) so a layout toggle
+  or restore re-attach can never leave a window with two.
 
   The overview pane auto-sizes to its content: `min(rows + footer, a
   quarter of the window height)`, floored at 2 (the sizing rule is
@@ -366,20 +538,81 @@ conversation.
   summary chunk on stdout (in tmux-format, not ANSI: the substitution
   treats output as tmux format markup, so raw ANSI would render as
   literal escape codes). State letters get `#[fg=#…]` codes from the
-  palette.
+  palette; a dual-agent window's letters are `|`-joined in the same format.
 
 Layout choice persists at `<state_dir>/layout` (read by `agent-new` so new
-windows match) and is toggled with `agent-layout` (Ctrl-Space L).
+windows match) and is toggled with `agent-layout` (Ctrl-Space L), which
+kills only `@role=overview` panes on the way to `compact` — never by pane
+index, so a window's one or two agent panes both survive the toggle.
+
+### Start/switch — `agent-other`
+
+`Ctrl-Space O` (and `O` in the focused overview pane) runs `agent-other
+--window-id <id>`, one smart action on the active window (spec Section 4):
+
+- **No mapping** (includes the `ctrl` window) → `display-message` notice,
+  no-op.
+- **Default slot's pane gone** → notice pointing at `Ctrl-Space R`
+  (restore) — there's no live agent pane to split from.
+- **Both slots live** → focus-jump between the two agent panes
+  (`tmux.active_pane_id` + `tmux.select_pane`; defaults to the secondary
+  if the active pane is neither). Wrapped so a `TmuxError` from a pane
+  dying mid-jump becomes a friendly notice, not a traceback.
+- **Secondary absent or dead** → *start it*:
+  1. Ensure-provisioned (Codex hooks, if the other kind is Codex).
+  2. Executable pre-flight (`command -v <exe>` on host or via
+     `container.exec_capture`) — skipped when the relevant `exec_cmd`/
+     `codex_exec_cmd` is a custom command (a fixed-name check proves
+     nothing about an arbitrary one). Missing → friendly notice, no pane
+     created. Steps 1–2 are idempotent, worktree-state-free checks and
+     deliberately run BEFORE the per-worktree cleanup lock — nothing
+     about them needs serializing, and running `ensure_host` (which
+     holds `codex-hooks.lock`; `ensure_container` is deliberately
+     lock-free) under the cleanup lock would nest the two locks.
+  3. Acquire the per-worktree cleanup lock (serializes a start-vs-start
+     race — the loser re-reads a now-live secondary and falls through to
+     focus-jump instead of splitting a second pane); re-read the mapping
+     and re-check eligibility.
+  4. `tmux.split_window(default_pane, percent=50, horizontal=True,
+     command=startup.placeholder_command(...))` — an inert placeholder,
+     the same idiom `agent-new` uses, so "scrub before launch" is
+     enforceable (a split's command starts before the pane id is even
+     returned).
+  5. `startup.scrub_pane_files` the new pane id against the resolved
+     worktree.
+  6. `exec_cmd.build(..., kind=other_kind)` — with the dead slot's
+     retained `session_id` (resume) if it had one, fresh otherwise — then
+     `tmux.respawn_pane` into it.
+  7. **Publish last**: a single `windows.update_mapping` call appends or
+     revives the slot. Because publication is the last step, any
+     exception up to and including the publish itself just kills the
+     pane it created and scrubs its files (`_rollback`) — the mapping is
+     never left pointing at a broken pane, and no caught failure needs a
+     rollback of the mapping itself.
+  Steps 3–7 are the only part still under the cleanup lock (see "Lock
+  discipline" above).
+
+Closing the secondary needs no command: quit the agent, the pane dies, the
+tick's dead-secondary transaction marks the slot dead (resume identity
+retained for next time). `agent-kill` still kills the whole window. `Ctrl-Space z`
+zooms/unzooms whichever pane has focus — no `agent-other`-specific code for
+full-pane view.
 
 ### State classification & overview
 
-Letter set + derivation rule above. The overview groups windows by repo
-(prefix before `:` in window name), shows a fold marker per repo, and
-suffixes `B`/`Z` with their live item counts (rendered as `background·N` /
-`sleeping·N`). Folds persist at `<state_dir>/overview-folds.json`. Active-row
-coloring inverts the fg/bg using `selected_fg` (chosen from perceived
-luminance for AAA contrast against light state colors). The TUI cursor
-auto-tracks the active tmux window unless the user has moved it.
+Letter set + derivation rule above (per slot: `derive_letter`; per window:
+`combined_letter`). The overview groups windows by repo (prefix before `:`
+in window name), shows a fold marker per repo, and renders a dual-agent
+window's slots as separate colored letters joined by a dim `|`
+(`overview.parse_state_code` → `SlotState` list), each suffixing `B`/`Z`
+with its live item count (`background·N` / `sleeping·N` — Codex slots never
+show these, see "Data flow" above). Repo headers count **live slots**, not
+windows, so a repo with one dual-agent window reads `(2 agents)`. Folds
+persist at `<state_dir>/overview-folds.json`. Active-row coloring inverts
+the fg/bg using `selected_fg` (chosen from perceived luminance for AAA
+contrast against light state colors), keyed off the window's
+combined-priority letter. The TUI cursor auto-tracks the active tmux window
+unless the user has moved it.
 
 Self-healing: each pending marker carries an expiry, so the counts can't drift
 the way the old `loop·N` cron-counter did. Every kind has a *precise* removal
@@ -409,22 +642,84 @@ payload-format drift):
   carries the same `background_tasks`, so the `Stop` reconcile already covers
   subagent markers.)
 
-Honest limitations: a background `Bash` whose session ends before it completes
-falls back to the TTL; crons restored on `--resume` don't re-fire `CronCreate`,
-so they won't re-register.
+Honest limitations (Claude): a background `Bash` whose session ends before
+it completes falls back to the TTL; crons restored on `--resume` don't
+re-fire `CronCreate`, so they won't re-register.
 
-Subagent isolation: a subagent inherits its parent's `TMUX_PANE`, so its own
-tool-uses fire the *parent* pane's hooks. Left unfiltered this would flip the
-parent `B`↔`R` while a subagent works and register a subagent-backgrounded Bash
-under the parent's pending dir (where it would never see a completion
-notification). `write-state.sh::is_subagent` filters these out: a subagent's
-PostToolUse payload carries `agent_id`/`agent_type` (a main-agent payload never
-does), so the `running`, `add-subagent`, and `add-bgshell` hooks skip when those
-fields are present — the pane tracks the main agent only. The check gates on
-*presence*, so a Claude Code build that drops the field degrades to the old
-unfiltered behaviour rather than breaking. The main agent launching a background
-subagent still registers `B` (that PostToolUse is the *parent's*, with no
-`agent_id`).
+Subagent isolation (Claude): a subagent inherits its parent's `TMUX_PANE`,
+so its own tool-uses fire the *parent* pane's hooks. Left unfiltered this
+would flip the parent `B`↔`R` while a subagent works and register a
+subagent-backgrounded Bash under the parent's pending dir (where it would
+never see a completion notification). `write-state.sh::is_subagent` filters
+these out: a subagent's PostToolUse payload carries `agent_id`/`agent_type`
+(a main-agent payload never does), so the `running`, `add-subagent`, and
+`add-bgshell` hooks skip when those fields are present — the pane tracks the
+main agent only. The check gates on *presence*, so a Claude Code build that
+drops the field degrades to the old unfiltered behaviour rather than
+breaking. The main agent launching a background subagent still registers
+`B` (that PostToolUse is the *parent's*, with no `agent_id`).
+
+### Codex hooks & session-id pinning
+
+Codex's hooks are provisioned once at the **user level** — see
+`codex_hooks.py` in the module map above — not per-worktree, because a
+sandboxed Codex session must never be trusted to run code from inside its
+own (potentially agent-writable) workspace, and because a known Codex bug
+([codex#27133]) silently ignores project-layer hooks in linked git
+worktrees. The script guards on three conditions before writing anything:
+`TMUX_PANE` set, `$PWD/.local/.tmux-agents` existing (cwd = worktree root —
+every default exec template `cd`s there first), and `TMUX_AGENTS_AGENT=1`
+exported. The third is the load-bearing one: without it, a manual `codex`
+run inside `agent-terminal`'s popup shell (which does propagate `TMUX_PANE`
+and does `cd` into the worktree, by design, so it behaves like a normal
+shell there) would otherwise corrupt the pane's phase and its session-id
+pin. `agent-terminal` deliberately does **not** export the marker, so those
+shells stay inert to the hook. The same latent exposure exists for *Claude*
+run manually there (its hooks key off `TMUX_PANE` alone, no marker check)
+— recorded in `BACKLOG.md` rather than fixed here, since retrofitting the
+marker into every already-provisioned `write-state.sh` would go dark for
+live panes spawned before the change.
+
+`session-<pane>.id` doubles as **pin**: `init` (`SessionStart`) overwrites
+it on every `source` except `startup` against an existing, differing pin
+(a nested Codex CLI launched by the root's own shell tool inherits
+`TMUX_PANE`/cwd/marker and would otherwise hijack the pin on its own
+`startup`; `/new`/`clear` still re-pin legitimately). Every other action
+compares the payload's `session_id` against the pin first: mismatch → the
+event writes nothing. **Nested Codex CLI launches inside an agent pane are
+documented as unsupported** — a nested `codex resume` is indistinguishable
+from a legitimate one, and this is the one gap the pin rule doesn't close.
+
+[codex#27133]: https://github.com/openai/codex/issues/27133
+
+**Honest limitations (dual-agent, not yet closed by more code):**
+- **Denied-permission staleness.** Codex has no `PermissionDenied` event, so
+  a slot the user just declined a permission prompt in stays `W` until its
+  next mapped event fires — worst case, `Stop`. Not a bug; there's no event
+  to hook.
+- **Subagent flicker / pinning, to be confirmed.** The session-id pin
+  defends against a Codex subagent's turn events overwriting the root
+  pin, but its guarantee depends on real Codex subagent-payload behavior
+  (does `SessionStart` fire only for the root session? do child turns carry
+  a distinct `session_id`?) that the design's release gate calls out as
+  needing E2E observation before it can be stated unconditionally. **This
+  is marked to-be-confirmed pending that verification pass** — until then,
+  treat "a subagent's activity might flicker the parent pane's letter" as a
+  possible, not-yet-ruled-out limitation for Codex slots (mirroring the
+  pre-filter behavior Claude once had, before `is_subagent` above).
+- **Mid-`agent-other`-crash visible unmapped pane.** `agent-other` publishes
+  the slot as its *last* step specifically so every *caught* failure needs
+  no mapping rollback (see "Start/switch — `agent-other`" above). The one
+  gap that's left: the process dying **outside** any try/except — between
+  creating the pane and publishing it — leaves a real, visible, unmapped
+  pane in the window. This is deliberately tolerated, not reconciled: it's
+  fully visible (nothing silent), closing it is one keystroke, and the next
+  `agent-other` invocation finds the slot absent/dead and starts normally.
+  Its per-pane files aren't permanently leaked either — they sit
+  unreferenced until that pane id gets recycled, at which point the next
+  spawn's mandatory scrub-before-launch (the aliasing guard in "Lock
+  discipline" above) cleans them up.
+- **Nested Codex CLI unsupported**, per the pinning section above.
 
 ### SSH agent forwarding
 
@@ -497,18 +792,26 @@ two-phase" above). The launcher detects the orphaned snapshot and
 prompts the user (`Restore N previous agents? [Y/n]`, 5-second
 default-Y timer). On consent it moves the snapshot to
 `windows.previous/`, starts tmux detached, spawns
-`agent-restore --background`, and `execvp`s into `tmux attach`. The
-worker pre-creates all windows up front (each with a `phase_hint="starting"`,
-yielding the `S` state — lowest priority in `derive_letter` chain),
-provisions the per-worktree hook script, and attaches the bottom overview
-pane in split layout.
-It groups entries by project, fires devcontainer `up_cmd`s in parallel
-(one per project group, max 4 concurrent), and `respawn-pane`s each
-placeholder into the real `claude` invocation as its container becomes
-ready. `--resume <session_id>` is injected via the `{resume_args}`
-substitution placeholder; the id was captured by the `SessionStart`
-Claude hook (`write-state.sh init` → `session-<pane>.id`) and merged
-into the window mapping by the state tick.
+`agent-restore --background`, and `execvp`s into `tmux attach`.
+
+Before touching any pane, `harvest_session_ids` reads every slot's
+`session-<pane>.id` off disk for **every** entry in the snapshot and merges
+the ids into the plan — a barrier, not a per-slot step, because on a fresh
+server a freshly-assigned pane id can equal a *different* slot's old pane
+id, and that slot's pre-launch scrub would destroy the id file before the
+other slot was ever processed. The worker pre-creates all windows up front
+(each with a `phase_hint="starting"`, yielding the `S` state — lowest
+priority in `derive_letter` chain; a dual-agent entry gets a dual split),
+provisions the per-worktree Claude hook script and (idempotently) the
+user-level Codex hooks, and attaches the bottom overview pane in split
+layout. It groups entries by project, fires devcontainer `up_cmd`s in
+parallel (one per project group, max 4 concurrent), and `respawn-pane`s
+each placeholder into the real agent invocation — each slot's own kind, via
+`exec_cmd.build` — as its container becomes ready. `{resume_args}` is
+injected kind-aware (` --resume <id>` Claude, ` resume <id>` Codex); the id
+was captured by that agent's `SessionStart` hook (`write-state.sh init` /
+`codex-hook.sh init` → `session-<pane>.id`) and merged into the window
+mapping by the state tick or the harvest barrier above.
 
 Failures per entry are isolated: logged to `tmux-agents.log` (see
 Logging below), and the failed pane is replaced with a heredoc that
@@ -541,9 +844,22 @@ reads the pane's per-pane state file: an alive-but-`errored` pane is
 window+pane in place — respawns it back into the `tail -F` placeholder,
 resets its state to `starting`, and returns a `Placeholder` pointing at
 the same pane — so `execute_plan` re-runs the container bring-up and
-respawns Claude into it. No new window is created, so retries never
-accumulate duplicates, and the retry is idempotent while the underlying
-cause (Docker down) persists.
+respawns the default agent into it. No new window is created, so retries
+never accumulate duplicates, and the retry is idempotent while the
+underlying cause (Docker down) persists.
+
+The window-level `EntryKind` above (`skip`/`revive`/`fresh`/`reactivate`)
+only ever describes **slot 0**. An **existing secondary** slot gets its own
+independent `SlotAction` (`classify_secondary`): `none` (pane alive,
+healthy), `reactivate` (pane alive but `phase=errored` — a failed earlier
+`agent-other` attempt left the placeholder), or `revive` (`pane_id: null`,
+or its recorded pane is gone) — with the slot's retained `session_id` as
+resume args. A mapping with no secondary slot is a normal single-agent
+window and is never "repaired" into a dual one. An entry drops out of the
+plan only when the window action is `skip` **and** the secondary action is
+`none` — so a healthy default with a dead secondary still gets planned
+(secondary-only repair), and a dead default with a healthy secondary
+revives only the default, never touching the already-healthy sibling pane.
 
 `pre_create_windows` splits a fresh agent pane above the
 surviving overview at 75/25 (`tmux.split_window(target=surviving_pane_id,
@@ -614,11 +930,25 @@ selection requires holding Option (iTerm2/Ghostty/Alacritty) or Fn
   agents.conf                         tmux config (loaded via -f)
   projects.toml                       user-edited project definitions
   theme.toml(.example)                optional palette overrides
-  windows/<window_id>.json            window→worktree mapping (host-side)
+  codex-hook.sh                       package-owned Codex hook script (host),
+                                      mode 0755; provisioned by codex_hooks.py
+  codex-hooks.lock                    fcntl lock for codex-hook.sh +
+                                      hooks.json provisioning
+  windows/<window_id>.json            window→worktree mapping (host-side),
+                                      schema 2 (agents: [AgentSlot, …])
+  windows/<window_id>.json.lock       stable sibling lock for the mapping
+                                      file above (never the JSON itself)
   windows.previous/<window_id>.json   transient; populated by the
                                       launcher on fresh-server restore,
                                       consumed by agent-restore, removed
                                       at end of restore
+
+~/.codex/hooks.json                   ← user-level Codex config (host);
+                                      merged by codex_hooks.py, owned
+                                      entries only (foreign entries survive)
+<container home>/.codex/hooks.json    same, inside every container
+<container home>/.codex/tmux-agents/codex-hook.sh   container twin of the
+                                      host script above
 
 /tmp/tmux-agents/                     ← TMUX_AGENTS_STATE_DIR
   layout                              "split" | "compact"
@@ -627,19 +957,39 @@ selection requires holding Option (iTerm2/Ghostty/Alacritty) or Fn
   tmux-agents.log                     unified rotating log (all components)
   (the derived letter is the per-window @state_code tmux option, not a file)
 
-<worktree>/.local/.tmux-agents/       ← per-worktree, written by Claude hooks
-  write-state.sh                      hook helper (provisioned, mode 0755)
-  state-<pane>.json                   {phase, updated_at}
-  pending-<pane>/<kind>__<id>         self-expiring B/Z markers (registry)
-  session-<pane>.id                   UUID written by SessionStart hook
-                                      (init action)
+<worktree>/.local/.tmux-agents/       ← per-worktree, written by agent hooks
+  write-state.sh                      Claude hook helper (provisioned, mode 0755)
+  .cleanup.lock                       per-worktree fcntl lock: destructive
+                                      per-pane cleanup + slot-liveness
+                                      publication (Claude and Codex hooks
+                                      write their own files lock-free)
+  state-<pane>.json                   {phase, updated_at} — written by
+                                      write-state.sh (Claude) or codex-hook.sh
+  pending-<pane>/<kind>__<id>         self-expiring B/Z markers (registry;
+                                      Claude slots only — Codex never writes
+                                      here)
+  session-<pane>.id                   UUID/session id written by SessionStart
+                                      (init action, either hook script) —
+                                      doubles as Codex's subagent-defense pin
 <worktree>/.claude/settings.local.json   tui:fullscreen + lifecycle hooks
+                                      (Claude only; Codex has no per-worktree
+                                      file — see ~/.codex/hooks.json above)
 ```
 
 ## Testing
 
-`uv run pytest -q` (under a second). Tests freely monkey-patch the `tmux`
+`uv run pytest -q` (a few seconds). Tests freely monkey-patch the `tmux`
 module rather than driving a real server; `tests/conftest.py` provides
 `tmp_state_dir` and `fixtures_dir`. The SSH relay sibling-import test
 (`test_ssh_relay.py`) checks the delivered-file import path; the hook-snippets
 test compiles each shell hook body to catch quoting drift.
+Codex-support tests: `test_agent_kind.py` (kind constants, resume-arg
+spelling), `test_codex_hooks.py` (host/container provisioning, digest +
+canonical-structure ensure, merge preserving foreign entries), `test_codex_hook.py`
+(the shell script itself compiles and its guard/pin behavior), `test_locks.py`
+(sibling-lock serialization, lock-order/no-deadlock), `test_other.py`
+(`agent-other`'s branches: dead-default message, start, revive-dead,
+focus-jump, no-mapping, preflight-skipped-on-custom-command, rollback on
+respawn/publication failure), plus schema-2/dead-slot/`last_pane_id` cases
+folded into `test_windows.py` and multi-slot tick/rendering cases folded
+into `test_state_tick.py` / `test_overview.py`.
