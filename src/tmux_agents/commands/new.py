@@ -17,6 +17,7 @@ from tmux_agents import (
     config,
     container,
     exec_cmd,
+    gh_auth,
     locks,
     logging_setup,
     overview,
@@ -195,6 +196,11 @@ def _provision(
                 if proj.forward_ssh_agent:
                     with reporter.stage("ssh pump") as st:
                         ssh_forward.maybe_spawn_pump(
+                            container_name, proj.user or "vscode"
+                        ).render(st)
+                if proj.share_gh_auth:
+                    with reporter.stage("gh auth") as st:
+                        gh_auth.maybe_sync_gh_auth(
                             container_name, proj.user or "vscode"
                         ).render(st)
 

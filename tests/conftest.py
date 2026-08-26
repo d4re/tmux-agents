@@ -61,6 +61,21 @@ def tmp_config_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_gh_sync(monkeypatch):
+    """Default `gh_auth.maybe_sync_gh_auth` to a no-op success so no test can
+    accidentally read the real gh keyring token or exec into a real container.
+    Call-site tests override with capturing fakes; `test_gh_auth.py` imports
+    the function directly at module level, which this patch doesn't touch."""
+    from tmux_agents import gh_auth
+
+    monkeypatch.setattr(
+        gh_auth,
+        "maybe_sync_gh_auth",
+        lambda c, u="vscode": gh_auth.SyncResult("synced"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_theme_cache():
     from tmux_agents import theme
 
