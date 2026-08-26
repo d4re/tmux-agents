@@ -316,6 +316,33 @@ even if your template references the env var.
 - Inside the container: `ls -la /tmp/tmux-agents-ssh.sock` to confirm the relay bound.
 - Container restart breaks the channel; `Ctrl-Space b` (rebuild) recreates the container and brings the agents back, or recreate a single agent with `Ctrl-Space k` then `Ctrl-Space a`.
 
+## GitHub CLI auth sharing
+
+Container projects also get the host's `gh` login by default, so
+`gh pr create` / `gh api` inside the container just work — no more
+`gh auth login` after every rebuild. At container-up (`agent-new`,
+`agent-restore`, `agent-rebuild`), the host runs `gh auth token`
+(keyring-backed) and pipes the token via stdin into
+`gh auth login --with-token` inside the container. The token never
+appears on a command line or in a file on the host; in the container it
+lands where a manual `gh auth login` would put it
+(`~/.config/gh/hosts.yml`).
+
+**Requirements:**
+- `gh` installed and logged in on the host (`gh auth status`).
+- `gh` on PATH inside the container.
+
+If either is missing the stage warns and the agent starts anyway — gh
+simply asks for a manual login as before.
+
+**Opt out per project:**
+
+```toml
+[isolated-thing]
+devcontainer  = true
+share_gh_auth = false
+```
+
 ## Daily use
 
 ```

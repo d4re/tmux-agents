@@ -244,6 +244,34 @@ def test_forward_ssh_agent_flag(tmp_path, body, expected):
 
 
 # ---------------------------------------------------------------------------
+# share_gh_auth flag — defaults true everywhere, can be turned off.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ('[a]\nrepo = "/x"\ndevcontainer = true\n', True),  # devcontainer default
+        (
+            '[a]\nrepo = "/x"\ncontainer = "foo"\ncontainer_workdir = "/w"\n',
+            True,
+        ),  # explicit container default
+        (
+            '[scripts]\nrepo = "/x"\nexec_cmd = "claude"\n',
+            True,
+        ),  # host-only default (inert)
+        (
+            '[a]\nrepo = "/x"\ndevcontainer = true\nshare_gh_auth = false\n',
+            False,
+        ),  # explicit off
+    ],
+)
+def test_share_gh_auth_flag(tmp_path, body, expected):
+    proj = next(iter(config.load(_write(tmp_path, body)).values()))
+    assert proj.share_gh_auth is expected
+
+
+# ---------------------------------------------------------------------------
 # devcontainer workdir resolution
 # ---------------------------------------------------------------------------
 

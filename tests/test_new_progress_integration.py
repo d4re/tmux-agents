@@ -375,6 +375,79 @@ def test_fatal_worktree_error_returns_4(
     assert windows_mod.read_mapping("@5").phase_hint == "errored"
 
 
+def test_gh_auth_stage_appears_in_log_and_syncs(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """The gh auth stage runs after the ssh pump and reports into the spawn log."""
+    from tmux_agents import gh_auth
+    from tmux_agents.gh_auth import SyncResult
+
+    repo = tmp_path / "backend"
+    (repo / ".worktrees" / "feat" / "x").mkdir(parents=True)
+    _write_projects(tmp_config_dir, repo)
+    monkeypatch.setattr(container, "current_name", lambda proj: "backend-c")
+
+    syncs: list[tuple[str, str]] = []
+
+    def fake_sync(c, u):
+        syncs.append((c, u))
+        return SyncResult("synced")
+
+    monkeypatch.setattr(gh_auth, "maybe_sync_gh_auth", fake_sync)
+    rc, log, cap = _run_provision(monkeypatch, tmp_config_dir, tmp_state_dir, repo)
+    assert rc == 0
+    assert "gh auth — token synced" in log
+    assert syncs == [("backend-c", "vscode")]
+    assert cap.respawns  # info line only — success path, no hold
+
+
+def test_gh_auth_stage_skipped_when_share_gh_auth_false(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    from tmux_agents import gh_auth
+
+    repo = tmp_path / "backend"
+    (repo / ".worktrees" / "feat" / "x").mkdir(parents=True)
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[backend]\nrepo = "{repo}"\n'
+        f'container = "backend-c"\n'
+        f'up_cmd = "true"\n'
+        f'exec_cmd = "true"\n'
+        f"share_gh_auth = false\n"
+    )
+    monkeypatch.setattr(container, "current_name", lambda proj: "backend-c")
+
+    syncs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gh_auth, "maybe_sync_gh_auth", lambda c, u: syncs.append((c, u))
+    )
+    rc, log, cap = _run_provision(monkeypatch, tmp_config_dir, tmp_state_dir, repo)
+    assert rc == 0
+    assert "gh auth" not in log
+    assert syncs == []
+
+
+def test_gh_auth_failure_warns_and_triggers_hold(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """SyncResult('failed') → stage warn → hold_pane_then_exec."""
+    from tmux_agents import gh_auth
+    from tmux_agents.gh_auth import SyncResult
+
+    repo = tmp_path / "backend"
+    (repo / ".worktrees" / "feat" / "x").mkdir(parents=True)
+    _write_projects(tmp_config_dir, repo)
+    monkeypatch.setattr(container, "current_name", lambda proj: "backend-c")
+    monkeypatch.setattr(
+        gh_auth, "maybe_sync_gh_auth", lambda c, u: SyncResult("failed")
+    )
+    rc, log, cap = _run_provision(monkeypatch, tmp_config_dir, tmp_state_dir, repo)
+    assert rc == 0
+    assert "gh auth — token sync failed" in log
+    assert len(cap.holds) == 1
+    assert phase.WAITING in cap.states
+
+
 def test_ssh_pump_timeout_warns_and_triggers_hold(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
 ):

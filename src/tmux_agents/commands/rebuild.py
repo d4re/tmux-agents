@@ -27,6 +27,7 @@ from tmux_agents import (
     config,
     container,
     exec_cmd,
+    gh_auth,
     logging_setup,
     overview,
     paths,
@@ -240,6 +241,12 @@ def _run_worker(
             if proj.forward_ssh_agent:
                 with multi.stage("ssh pump") as st:
                     ssh_forward.maybe_spawn_pump(
+                        container_name,
+                        proj.user or "vscode",
+                    ).render(st)
+            if proj.share_gh_auth:
+                with multi.stage("gh auth") as st:
+                    gh_auth.maybe_sync_gh_auth(
                         container_name,
                         proj.user or "vscode",
                     ).render(st)
