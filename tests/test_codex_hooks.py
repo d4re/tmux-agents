@@ -1,5 +1,7 @@
 import json
 import subprocess
+
+import pytest
 from pathlib import Path
 
 from tmux_agents import codex_hooks, container
@@ -504,3 +506,80 @@ def test_ensure_host_reclaims_entries_at_stale_paths(tmp_path, monkeypatch):
     assert "user-thing" in all_cmds  # genuine foreign hook preserved
     script = str(tmp_path / "cfg" / "codex-hook.sh")
     assert f"sh {script} running" in all_cmds  # canonical set present
+
+
+# ---------------------------------------------------------------------------
+# ensure_sandbox — sbx twin of ensure_container
+# ---------------------------------------------------------------------------
+
+
+class _FakeSandboxFS:
+    """In-memory stand-in for sandbox.exec_capture/deliver, same trick the
+    ensure_container tests use for docker exec."""
+
+    def __init__(self):
+        self.files: dict[str, str] = {}
+        self.modes: dict[str, str | None] = {}
+
+    def exec_capture(self, name, script, *, stdin=None, timeout=None):
+        assert name == "acg"
+        if script == 'printf %s "$HOME"':
+            return "/home/agent"
+        if script.startswith("if [ -e "):
+            # Sentinel-based cat: `if [ -e p ]; then cat p; else printf %s
+            # <sentinel>; fi` — a missing file answers via stdout, so a
+            # raised error can only mean a transport failure.
+            import shlex as _shlex
+
+            tokens = _shlex.split(script)
+            path = tokens[3]
+            sentinel = tokens[-2].rstrip(";")
+            return self.files.get(path, sentinel)
+        raise AssertionError(f"unexpected script {script!r}")
+
+    def deliver(self, name, path, content, *, mode=None):
+        assert name == "acg"
+        self.files[str(path)] = content
+        self.modes[str(path)] = mode
+
+
+@pytest.fixture
+def sandbox_fs(monkeypatch):
+    from tmux_agents import sandbox
+
+    fs = _FakeSandboxFS()
+    monkeypatch.setattr(sandbox, "exec_capture", fs.exec_capture)
+    monkeypatch.setattr(sandbox, "deliver", fs.deliver)
+    return fs
+
+
+def test_ensure_sandbox_provisions_fresh(sandbox_fs):
+    assert codex_hooks.ensure_sandbox("acg") is True
+    script_path = "/home/agent/.codex/tmux-agents/codex-hook.sh"
+    hooks_path = "/home/agent/.codex/hooks.json"
+    assert sandbox_fs.files[script_path] == codex_hooks.packaged_script()
+    assert sandbox_fs.modes[script_path] == "755"
+    data = json.loads(sandbox_fs.files[hooks_path])
+    for event in codex_hooks.HOOK_EVENTS:
+        assert event in data["hooks"]
+
+
+def test_ensure_sandbox_idempotent(sandbox_fs):
+    assert codex_hooks.ensure_sandbox("acg") is True
+    assert codex_hooks.ensure_sandbox("acg") is False
+
+
+def test_ensure_sandbox_preserves_foreign_hooks(sandbox_fs):
+    sandbox_fs.files["/home/agent/.codex/hooks.json"] = json.dumps(
+        {
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "my-own-thing"}]}]
+            }
+        }
+    )
+    codex_hooks.ensure_sandbox("acg")
+    data = json.loads(sandbox_fs.files["/home/agent/.codex/hooks.json"])
+    stop_cmds = [
+        h["command"] for g in data["hooks"]["Stop"] for h in g.get("hooks", [])
+    ]
+    assert "my-own-thing" in stop_cmds
