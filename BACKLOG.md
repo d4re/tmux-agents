@@ -3,6 +3,21 @@
 Potential additions — none are currently planned. Keep this file honest: if
 an item is being worked on, delete it from here.
 
+## Shell-quote exec-template substitutions
+
+All three backends' default exec templates substitute `{workdir}` (and the
+sandbox one `{sandbox}`) into strings that ultimately run through `sh -c`
+without shell-quoting — the host-only default doesn't quote at all, the
+container/sandbox ones splice into a single-quoted `bash -lc '…'` body an
+apostrophe could terminate. Inputs are the user's own projects.toml repo
+paths and `git check-ref-format`-validated branch names, so this is
+self-inflicted-config territory, not an injection surface — but a repo
+path containing a quote produces baffling breakage, and for sandbox
+projects the broken remainder would run on the host. Fix is a cross-
+backend change (quote at `Project.substitute` time or build argv with
+`shlex`), surfaced by the 2026-08-27 Codex review of the sandbox backend;
+deliberately not done one-backend-at-a-time.
+
 ## Dev-link helper
 
 A small `make dev-link` (or `scripts/dev-link.sh`) that symlinks

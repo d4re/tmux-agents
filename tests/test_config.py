@@ -500,3 +500,202 @@ def test_codex_exec_cmd_explicit_flag_true_when_set(tmp_path):
     proj = _load_one(tmp_path, '[proj]\nrepo = "/r"\ncodex_exec_cmd = "my-codex"\n')
     assert proj.exec_cmd_explicit is False
     assert proj.codex_exec_cmd_explicit is True
+
+
+# ---------------------------------------------------------------------------
+# Sandbox backend (docs/SANDBOX-MODE.md)
+# ---------------------------------------------------------------------------
+
+
+def _sandbox_toml(tmp_path, extra: str = "") -> Path:
+    repo = tmp_path / "sbxrepo"
+    repo.mkdir(exist_ok=True)
+    return _write(tmp_path, f'[sbxproj]\nrepo = "{repo}"\nsandbox = true\n{extra}')
+
+
+def test_sandbox_project_backend(tmp_path):
+    p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
+    assert p.sandbox is True
+    assert p.backend == config.BACKEND_SANDBOX
+    assert not p.is_container
+    assert p.sandbox_name == "sbxproj"
+
+
+def test_container_project_backend(fixtures_dir):
+    p = config.load(fixtures_dir / "projects_example.toml")["api"]
+    assert p.backend == config.BACKEND_CONTAINER
+    assert p.is_container
+
+
+def test_host_project_backend(fixtures_dir):
+    p = config.load(fixtures_dir / "projects_example.toml")["scripts"]
+    assert p.backend == config.BACKEND_HOST
+    assert not p.is_container
+
+
+def test_sandbox_must_be_bool(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = _write(tmp_path, f'[p]\nrepo = "{repo}"\nsandbox = "yes"\n')
+    with pytest.raises(config.ConfigError, match="must be a boolean"):
+        config.load(path)
+
+
+@pytest.mark.parametrize(
+    "key_line",
+    [
+        'container = "x"',
+        "devcontainer = true",
+        'user = "vscode"',
+        'container_workdir = "/work"',
+        'up_cmd = "echo up"',
+    ],
+)
+def test_sandbox_mutually_exclusive_keys(tmp_path, key_line):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = _write(tmp_path, f'[p]\nrepo = "{repo}"\nsandbox = true\n{key_line}\n')
+    with pytest.raises(config.ConfigError, match="mutually exclusive"):
+        config.load(path)
+
+
+def test_sandbox_false_is_plain_host(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    p = config.load(_write(tmp_path, f'[p]\nrepo = "{repo}"\nsandbox = false\n'))["p"]
+    assert p.backend == config.BACKEND_HOST
+
+
+def test_sandbox_workdir_is_host_path(tmp_path):
+    p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
+    assert p.workdir_for(None) == str(p.repo)
+    assert p.workdir_for("feat") == f"{p.repo}/.worktrees/feat"
+
+
+def test_sbx_keys_parsed(tmp_path):
+    mount = tmp_path / "kube"
+    mount.mkdir()
+    p = config.load(
+        _sandbox_toml(
+            tmp_path,
+            extra=(
+                'sbx_template = "acg-sbx-template:0.3"\n'
+                'sbx_kits = ["https://github.com/rmabon/dotfiles"]\n'
+                f'sbx_mounts = ["{mount}:ro"]\n'
+                'sbx_memory = "8g"\n'
+            ),
+        )
+    )["sbxproj"]
+    assert p.sbx_template == "acg-sbx-template:0.3"
+    assert p.sbx_kits == ("https://github.com/rmabon/dotfiles",)
+    assert p.sbx_mounts == (f"{mount}:ro",)
+    assert p.sbx_memory == "8g"
+
+
+def test_sbx_defaults_when_absent(tmp_path):
+    p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
+    assert p.sbx_template is None
+    assert p.sbx_kits == ()
+    assert p.sbx_mounts == ()
+    assert p.sbx_memory is None
+
+
+@pytest.mark.parametrize(
+    "key_line",
+    [
+        'sbx_template = "t:1"',
+        'sbx_kits = ["k"]',
+        'sbx_mounts = ["/tmp"]',
+        'sbx_memory = "8g"',
+    ],
+)
+def test_sbx_keys_require_sandbox(tmp_path, key_line):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = _write(tmp_path, f'[p]\nrepo = "{repo}"\n{key_line}\n')
+    with pytest.raises(config.ConfigError, match="requires 'sandbox = true'"):
+        config.load(path)
+
+
+@pytest.mark.parametrize(
+    "key_line, match",
+    [
+        ("sbx_template = 3", "'sbx_template' must be a string"),
+        ('sbx_kits = "k"', "'sbx_kits' must be a list of strings"),
+        ("sbx_kits = [1]", "'sbx_kits' must be a list of strings"),
+        ('sbx_mounts = "x"', "'sbx_mounts' must be a list of strings"),
+        ("sbx_memory = 8", "'sbx_memory' must be a string"),
+    ],
+)
+def test_sbx_key_strict_types(tmp_path, key_line, match):
+    with pytest.raises(config.ConfigError, match=match):
+        config.load(_sandbox_toml(tmp_path, extra=key_line + "\n"))
+
+
+def test_sbx_mounts_tilde_expanded_and_ro_parsed(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    (fake_home / ".kube").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    p = config.load(_sandbox_toml(tmp_path, extra='sbx_mounts = ["~/.kube:ro"]\n'))[
+        "sbxproj"
+    ]
+    assert p.sbx_mounts == (f"{fake_home / '.kube'}:ro",)
+
+
+def test_sbx_mounts_reject_missing_path(tmp_path):
+    with pytest.raises(config.ConfigError, match="does not exist"):
+        config.load(_sandbox_toml(tmp_path, extra='sbx_mounts = ["/nope-zzz"]\n'))
+
+
+def test_sbx_mounts_reject_relative_path(tmp_path):
+    with pytest.raises(config.ConfigError, match="absolute"):
+        config.load(_sandbox_toml(tmp_path, extra='sbx_mounts = ["relative/path"]\n'))
+
+
+def test_sbx_mounts_reject_duplicates(tmp_path):
+    d = tmp_path / "kube"
+    d.mkdir()
+    with pytest.raises(config.ConfigError, match="duplicate"):
+        config.load(_sandbox_toml(tmp_path, extra=f'sbx_mounts = ["{d}", "{d}:ro"]\n'))
+
+
+DEFAULT_SANDBOX_EXEC = (
+    "sbx exec -it -e TERM -e COLORTERM -e TMUX_PANE -e TMUX_AGENTS_AGENT=1 "
+    "{sandbox} bash -lc 'cd {workdir} && exec claude{resume_args}'"
+)
+DEFAULT_SANDBOX_CODEX_EXEC = DEFAULT_SANDBOX_EXEC.replace("exec claude", "exec codex")
+
+
+def test_sandbox_default_exec_cmds_both_kinds(tmp_path):
+    """The default must exist for BOTH kinds: with only exec_cmd overridden,
+    the codex slot once fell back to the host-only default and ran codex on
+    the host (hit live 2026-08-26)."""
+    p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
+    assert p.exec_cmd == DEFAULT_SANDBOX_EXEC
+    assert p.codex_exec_cmd == DEFAULT_SANDBOX_CODEX_EXEC
+
+
+def test_sandbox_substitute_injects_sandbox_name(tmp_path):
+    p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
+    cmd = p.substitute(p.exec_cmd, branch="feat", resume_args=" --resume abc")
+    assert " sbxproj " in cmd
+    assert f"cd {p.repo}/.worktrees/feat" in cmd
+    assert "--resume abc" in cmd
+
+
+def test_non_sandbox_substitute_sandbox_is_empty(fixtures_dir):
+    p = config.load(fixtures_dir / "projects_example.toml")["scripts"]
+    assert p.substitute("x{sandbox}y", branch=None) == "xy"
+
+
+def test_forward_ssh_agent_explicit_flag(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    implicit = config.load(_write(tmp_path, f'[p]\nrepo = "{repo}"\n'))["p"]
+    assert implicit.forward_ssh_agent_explicit is False
+    explicit = config.load(
+        _write(
+            tmp_path, f'[q]\nrepo = "{repo}"\nforward_ssh_agent = true\n', name="q.toml"
+        )
+    )["q"]
+    assert explicit.forward_ssh_agent_explicit is True

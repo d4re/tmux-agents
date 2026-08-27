@@ -242,3 +242,30 @@ def test_container_not_running_fails_with_message(
     assert rc == 1
     assert execs == []
     assert any("no running container" in m for m in messages)
+
+
+def test_sandbox_project_execs_sbx_not_host_shell(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """A host shell for a sandbox project would be a silent isolation hole."""
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    worktree = repo / ".worktrees" / "feat-x"
+    worktree.mkdir(parents=True)
+    _write_projects(tmp_config_dir, f'[svc]\nrepo = "{repo}"\nsandbox = true\n')
+    _write_mapping("@1", project="svc", branch="feat-x", host_worktree=worktree)
+
+    execs, chdirs, _ = _stub_exec(monkeypatch)
+
+    rc = terminal.main(["--window-id", "@1"])
+
+    assert rc == 0
+    assert chdirs == []  # host chdir would mean a host shell
+    ((exe, argv),) = execs
+    assert exe == "sbx"
+    assert argv[:3] == ["sbx", "exec", "-it"]
+    assert "-e" in argv and "TMUX_PANE" in argv
+    assert "svc" in argv
+    body = argv[-1]
+    assert body.startswith(f"cd '{worktree}'") or body.startswith(f"cd {worktree}")
+    assert body.endswith("exec bash -il")

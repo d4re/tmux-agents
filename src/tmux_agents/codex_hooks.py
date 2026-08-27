@@ -236,24 +236,23 @@ def _container_deliver(
     container.exec_capture(container_name, user, script, stdin=content)
 
 
-def ensure_container(container_name: str, user: str) -> bool:
-    """Container-side twin of `ensure_host`: same canonical script +
-    owned hooks.json entries, provisioned inside the container via
-    `docker exec -u <user>`. No lock — writes are a unique mktemp +
-    atomic rename with deterministic content, so concurrent callers
-    converge. Returns True iff anything was written."""
-    home = container.exec_capture(container_name, user, 'printf %s "$HOME"').strip()
+def _ensure_remote(cat, deliver_fn, home: str) -> bool:
+    """Shared body of ensure_container/ensure_sandbox: same canonical
+    script + owned hooks.json entries, delivered via the backend's own
+    exec/deliver primitives. `cat(path) -> str` returns "" for a missing
+    file; `deliver_fn(path, content, mode=None)` must be unique-mktemp +
+    atomic-rename. Returns True iff anything was written."""
     script = PurePosixPath(home) / ".codex" / "tmux-agents" / _SCRIPT_NAME
     hooks_file = PurePosixPath(home) / ".codex" / "hooks.json"
 
     wrote = False
 
     want = packaged_script()
-    if _container_cat(container_name, user, script) != want:
-        _container_deliver(container_name, user, script, want, mode="755")
+    if cat(script) != want:
+        deliver_fn(script, want, mode="755")
         wrote = True
 
-    raw = _container_cat(container_name, user, hooks_file)
+    raw = cat(hooks_file)
     try:
         data = _as_dict(json.loads(raw) if raw.strip() else {})
     except ValueError:
@@ -261,7 +260,53 @@ def ensure_container(container_name: str, user: str) -> bool:
     table = _as_dict(data.get("hooks"))
     if _owned_subset(table, script) != _canonical_subset(script):
         data["hooks"] = merge(table, script)
-        _container_deliver(container_name, user, hooks_file, json.dumps(data, indent=2))
+        deliver_fn(hooks_file, json.dumps(data, indent=2))
         wrote = True
 
     return wrote
+
+
+def ensure_container(container_name: str, user: str) -> bool:
+    """Container-side twin of `ensure_host`: same canonical script +
+    owned hooks.json entries, provisioned inside the container via
+    `docker exec -u <user>`. No lock — writes are a unique mktemp +
+    atomic rename with deterministic content, so concurrent callers
+    converge. Returns True iff anything was written."""
+    home = container.exec_capture(container_name, user, 'printf %s "$HOME"').strip()
+
+    def cat(path: PurePosixPath) -> str:
+        return _container_cat(container_name, user, path)
+
+    def deliver_fn(path: PurePosixPath, content: str, mode: str | None = None) -> None:
+        _container_deliver(container_name, user, path, content, mode=mode)
+
+    return _ensure_remote(cat, deliver_fn, home)
+
+
+def ensure_sandbox(name: str) -> bool:
+    """Sandbox twin of `ensure_container`: same guarantees (home discovery
+    via exec_capture, foreign-hook-preserving merge, digest comparison,
+    atomic delivery), through `sbx exec` instead of `docker exec`. Raises
+    sandbox.SandboxError when sbx itself fails. Imported lazily — sandbox
+    imports config, and keeping this module import-light avoids a cycle."""
+    from tmux_agents import sandbox
+
+    home = sandbox.exec_capture(name, 'printf %s "$HOME"').strip()
+
+    absent = "__tmux_agents_absent__"
+
+    def cat(path: PurePosixPath) -> str:
+        # Sentinel-based absence probe: only a CONFIRMED missing file reads
+        # as "" (fresh provisioning). A transport/read failure must raise —
+        # treating it as missing would make the merge below overwrite
+        # hooks.json from scratch and clobber foreign hook entries.
+        q = shlex.quote(str(path))
+        out = sandbox.exec_capture(
+            name, f"if [ -e {q} ]; then cat {q}; else printf %s {absent}; fi"
+        )
+        return "" if out == absent else out
+
+    def deliver_fn(path: PurePosixPath, content: str, mode: str | None = None) -> None:
+        sandbox.deliver(name, path, content, mode=mode)
+
+    return _ensure_remote(cat, deliver_fn, home)

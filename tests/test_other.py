@@ -635,3 +635,136 @@ def test_stale_secondary_pane_routes_to_revive_not_focus_jump(
     assert updated.agents[1].session_id == "bbbbbbbb-1111-2222-3333-444444444444"
     # The exited pane's files were scrubbed inline (no cleanup pointer existed).
     assert (worktree, "15") in calls.scrubbed
+
+
+# ===== Sandbox backend =====
+
+
+def _sandbox_setup(monkeypatch, tmp_config_dir, tmp_path):
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    worktree = repo / ".worktrees" / "feat-x"
+    worktree.mkdir(parents=True)
+    _write_projects(tmp_config_dir, f'[svc]\nrepo = "{repo}"\nsandbox = true\n')
+    _write_mapping(_mapping(worktree, project="svc"))
+    calls = _stub(monkeypatch)
+    _live(monkeypatch, ["%1"])
+    return calls
+
+
+def test_sandbox_project_probes_in_sandbox_not_host(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """Executable preflight for a sandbox project runs `command -v` via
+    sandbox.exec_capture — never shutil.which on the host, never docker."""
+    import pytest as _pytest
+
+    from tmux_agents import sandbox as sandbox_mod
+
+    calls = _sandbox_setup(monkeypatch, tmp_config_dir, tmp_path)
+    probes = []
+    monkeypatch.setattr(
+        sandbox_mod,
+        "exec_capture",
+        lambda name, script, **kw: probes.append((name, script)) or "found\n",
+    )
+    monkeypatch.setattr(
+        other_mod.shutil,
+        "which",
+        lambda exe: _pytest.fail("host which() must not run for sandbox"),
+    )
+    ensured = []
+    monkeypatch.setattr(
+        other_mod.codex_hooks, "ensure_sandbox", lambda name: ensured.append(name)
+    )
+
+    rc = other_mod.main(["--window-id", WINDOW])
+
+    assert rc == 0
+    assert ensured == ["svc"]
+    assert calls.ensure_host == [] and calls.ensure_container == []
+    assert probes and probes[0][0] == "svc" and "command -v codex" in probes[0][1]
+    assert len(calls.respawned) == 1
+    assert calls.respawned[0][1].startswith("sbx exec")
+
+
+def test_sandbox_hook_provisioning_failure_is_notice(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    from tmux_agents import sandbox as sandbox_mod
+
+    calls = _sandbox_setup(monkeypatch, tmp_config_dir, tmp_path)
+
+    def boom(name):
+        raise sandbox_mod.SandboxError(sandbox_mod.DAEMON_HINT)
+
+    monkeypatch.setattr(other_mod.codex_hooks, "ensure_sandbox", boom)
+
+    rc = other_mod.main(["--window-id", WINDOW])
+
+    assert rc == 0  # notice, not crash — nothing was created
+    assert calls.splits == []
+    assert any("daemon" in m for m in calls.messages)
+
+
+def test_sandbox_daemon_down_during_preflight_surfaces_hint(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """A hint-classified SandboxError (daemon/login) from the preflight must
+    surface its remediation, not read as 'codex not found on sandbox'."""
+    from tmux_agents import sandbox as sandbox_mod
+
+    calls = _sandbox_setup(monkeypatch, tmp_config_dir, tmp_path)
+    monkeypatch.setattr(other_mod.codex_hooks, "ensure_sandbox", lambda name: True)
+
+    def boom(name, script, **kw):
+        raise sandbox_mod.SandboxError(sandbox_mod.DAEMON_HINT)
+
+    monkeypatch.setattr(sandbox_mod, "exec_capture", boom)
+
+    rc = other_mod.main(["--window-id", WINDOW])
+
+    assert calls.splits == []
+    assert rc == 1
+    assert any("daemon" in m for m in calls.messages)
+
+
+def test_sandbox_missing_exe_is_notice(monkeypatch, tmp_config_dir, tmp_path):
+    from tmux_agents import sandbox as sandbox_mod
+
+    calls = _sandbox_setup(monkeypatch, tmp_config_dir, tmp_path)
+    monkeypatch.setattr(other_mod.codex_hooks, "ensure_sandbox", lambda name: True)
+    # The probe script always exits 0 and answers via stdout — "missing"
+    # is the only shape that may read as not-found.
+    monkeypatch.setattr(
+        sandbox_mod, "exec_capture", lambda name, script, **kw: "missing\n"
+    )
+
+    rc = other_mod.main(["--window-id", WINDOW])
+
+    assert rc == 0
+    assert calls.splits == []
+    assert any("not found on sandbox" in m for m in calls.messages)
+
+
+def test_sandbox_transport_failure_not_misread_as_missing_exe(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """A non-exit failure (sbx binary missing, timeout, deleted sandbox)
+    must surface its own message, never the misleading 'not found'."""
+    from tmux_agents import sandbox as sandbox_mod
+
+    calls = _sandbox_setup(monkeypatch, tmp_config_dir, tmp_path)
+    monkeypatch.setattr(other_mod.codex_hooks, "ensure_sandbox", lambda name: True)
+
+    def boom(name, script, **kw):
+        raise sandbox_mod.SandboxError(sandbox_mod.INSTALL_HINT)
+
+    monkeypatch.setattr(sandbox_mod, "exec_capture", boom)
+
+    rc = other_mod.main(["--window-id", WINDOW])
+
+    assert rc == 1
+    assert calls.splits == []
+    assert not any("not found" in m for m in calls.messages)
+    assert any("not installed" in m for m in calls.messages)

@@ -14,6 +14,7 @@ Two halves, like `agent-new`:
 
 from __future__ import annotations
 import argparse
+import dataclasses
 import io
 import logging
 import os
@@ -23,6 +24,7 @@ import time
 from dataclasses import dataclass
 
 from tmux_agents import (
+    agent_kind,
     codex_hooks,
     config,
     container,
@@ -34,6 +36,7 @@ from tmux_agents import (
     phase,
     pickers,
     progress,
+    sandbox,
     ssh_forward,
     startup,
     tmux,
@@ -65,10 +68,13 @@ class Affected:
 
 
 def _eligible(proj: config.Project) -> bool:
-    """A project can be rebuilt iff it has a container recipe: a devcontainer,
-    or a named container with an *explicitly configured* `up_cmd` (the
+    """A project can be rebuilt iff it has a recreation recipe: a sandbox
+    (the projects.toml sbx_* keys ARE the recipe), a devcontainer, or a
+    named container with an *explicitly configured* `up_cmd` (the
     auto-defaulted devcontainer up_cmd doesn't count — a pre-existing named
     container has no way to recreate itself)."""
+    if proj.backend == config.BACKEND_SANDBOX:
+        return True
     if proj.devcontainer:
         return True
     return proj.container is not None and proj.up_cmd_explicit
@@ -126,21 +132,31 @@ def _pick_project(
 
 
 def _print_warning(
-    project: str, affected: list[Affected], busy: list[Affected]
+    project: str,
+    affected: list[Affected],
+    busy: list[Affected],
+    *,
+    is_sandbox: bool = False,
 ) -> None:
     n = len(affected)
+    what = (
+        "recreates the sandbox VM (sessions/logins are exported and restored)"
+        if is_sandbox
+        else "recreates the shared container"
+    )
     if not affected:
-        print(f"Rebuilding {project}: no agents are currently in its container.")
+        where = "sandbox" if is_sandbox else "container"
+        print(f"Rebuilding {project}: no agents are currently in its {where}.")
         return
     noun = "agent" if n == 1 else "agents"
     if busy:
         print(
-            f"⚠  Rebuilding {project} recreates the shared container and kills all "
+            f"⚠  Rebuilding {project} {what} and kills all "
             f"{n} {noun} in it. {len(busy)} actively working:"
         )
     else:
         print(
-            f"Rebuilding {project} recreates the shared container and kills all "
+            f"Rebuilding {project} {what} and kills all "
             f"{n} {noun} in it (all idle/sleeping):"
         )
     for a in affected:
@@ -153,11 +169,17 @@ def _print_warning(
     )
 
 
-def _confirm(project: str, affected: list[Affected], *, assume_yes: bool) -> bool:
+def _confirm(
+    project: str,
+    affected: list[Affected],
+    *,
+    assume_yes: bool,
+    is_sandbox: bool = False,
+) -> bool:
     if assume_yes:
         return True
     busy = [a for a in affected if a.busy]
-    _print_warning(project, affected, busy)
+    _print_warning(project, affected, busy, is_sandbox=is_sandbox)
     try:
         return pickers.prompt_yes_no(f"rebuild {project}? ", default=not busy)
     except (pickers.Cancelled, KeyboardInterrupt):
@@ -198,15 +220,8 @@ def _live_slots(
     ]
 
 
-def _run_worker(
-    proj: config.Project, affected: list[Affected], *, no_cache: bool
-) -> int:
-    """Detached: show progress in each pane, rebuild the container, respawn
-    the SSH pump, and re-exec every live agent slot's pane. Per-pane
-    failures are isolated; a container-rebuild failure marks every pane
-    errored."""
-    live = _live_slots(affected)
-    # Show live build output where each agent used to be.
+def _show_placeholders(live: list[tuple[Affected, windows_mod.AgentSlot]]) -> None:
+    """Show live rebuild output where each agent used to be."""
     for a, slot in live:
         startup._respawn_with_retry(
             f"%{slot.pane_id}",
@@ -216,18 +231,48 @@ def _run_worker(
             a.mapping.host_worktree, slot.pane_id, phase_value=phase.STARTING
         )
 
+
+def _open_multi_reporter(
+    affected: list[Affected], banner: str
+) -> tuple[dict[str, io.TextIOWrapper], progress.MultiReporter]:
     files: dict[str, io.TextIOWrapper] = {}
     reporters: list[progress.Reporter] = []
+    for a in affected:
+        log_path = paths.spawn_log(a.mapping.window_id)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(log_path, "w", buffering=1)
+        files[a.mapping.window_id] = f
+        r = progress.Reporter(out=f, color=True, clock=time.monotonic)
+        r.banner(banner)
+        reporters.append(r)
+    return files, progress.MultiReporter(reporters)
+
+
+def _close_reporters(files: dict[str, io.TextIOWrapper], affected: list[Affected]):
+    for f in files.values():
+        try:
+            f.close()
+        except Exception:
+            pass
+    for a in affected:
+        paths.spawn_log(a.mapping.window_id).unlink(missing_ok=True)
+
+
+def _run_worker(
+    proj: config.Project, affected: list[Affected], *, no_cache: bool
+) -> int:
+    """Detached: show progress in each pane, rebuild the container, respawn
+    the SSH pump, and re-exec every live agent slot's pane. Per-pane
+    failures are isolated; a container-rebuild failure marks every pane
+    errored."""
+    live = _live_slots(affected)
+    _show_placeholders(live)
+
+    files: dict[str, io.TextIOWrapper] = {}
     try:
-        for a in affected:
-            log_path = paths.spawn_log(a.mapping.window_id)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            f = open(log_path, "w", buffering=1)
-            files[a.mapping.window_id] = f
-            r = progress.Reporter(out=f, color=True, clock=time.monotonic)
-            r.banner(f"Rebuilding container: {proj.name}")
-            reporters.append(r)
-        multi = progress.MultiReporter(reporters)
+        files, multi = _open_multi_reporter(
+            affected, f"Rebuilding container: {proj.name}"
+        )
 
         try:
             with multi.stage("rebuild") as st:
@@ -274,13 +319,7 @@ def _run_worker(
                     exc_info=True,
                 )
     finally:
-        for f in files.values():
-            try:
-                f.close()
-            except Exception:
-                pass
-        for a in affected:
-            paths.spawn_log(a.mapping.window_id).unlink(missing_ok=True)
+        _close_reporters(files, affected)
 
     # Container is up; re-exec every live slot's pane, isolating failures.
     failures = 0
@@ -312,6 +351,192 @@ def _run_worker(
     return 0 if failures == 0 else 1
 
 
+def _run_sandbox_worker(
+    proj: config.Project,
+    affected: list[Affected],
+    *,
+    discard_state: bool,
+    no_cache: bool,
+) -> int:
+    """Sandbox rebuild = state-preserving recreate: export the irreplaceable
+    agent state (sessions, history, memory, the codex login), rm + create
+    (new template/mounts/memory take effect), import it back, re-provision
+    codex hooks, respawn every live slot. Export failure aborts — never
+    delete what couldn't be saved — unless --discard-state; import failure
+    degrades to the destructive-reset fallback (resume ids cleared, codex
+    slots held on a login-required placeholder)."""
+    if no_cache:
+        logger.warning(
+            "--no-cache is meaningless for sandbox project %r (templates are "
+            "prebuilt images) — proceeding without it",
+            proj.name,
+        )
+    live = _live_slots(affected)
+    _show_placeholders(live)
+
+    name = proj.sandbox_name
+    imported = False
+    files: dict[str, io.TextIOWrapper] = {}
+    try:
+        files, multi = _open_multi_reporter(affected, f"Rebuilding sandbox: {name}")
+
+        # Daemon FIRST: with it down (its normal state after boot) the export
+        # stage would fail with the daemon hint and the failure text would
+        # then offer --discard-state — dangerous advice for a failure whose
+        # real fix is starting the daemon.
+        try:
+            with multi.stage("sbx daemon") as st:
+                sandbox.ensure_daemon()
+        except sandbox.SandboxError as ex:
+            logger.error("sbx daemon unavailable for %r: %s", proj.name, ex)
+            for a in affected:
+                _fail_pane(a, f"sbx daemon unavailable: {ex}")
+            return 1
+
+        state_blob: bytes | None = None
+        try:
+            with multi.stage("export state") as st:
+                if discard_state:
+                    st.skip("--discard-state")
+                elif not sandbox.is_present(name):
+                    st.skip("sandbox absent — nothing to export")
+                else:
+                    st.info("exporting sessions/history/logins…")
+                    state_blob = sandbox.export_state(name)
+                    # Persist host-side BEFORE `sbx rm`: an in-memory-only
+                    # blob dies with a worker crash between removal and
+                    # import — exactly the state this export exists to save.
+                    backup = paths.sbx_rebuild_backup(name)
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "wb") as bf:
+                        bf.write(state_blob)
+                        bf.flush()
+                        os.fsync(bf.fileno())
+                    st.info(f"state saved to {backup}")
+        except sandbox.SandboxError as ex:
+            logger.error("state export failed for %r: %s", proj.name, ex)
+            for a in affected:
+                _fail_pane(
+                    a,
+                    f"state export failed: {ex}\n"
+                    "  Nothing was deleted. Re-run with --discard-state to "
+                    "rebuild anyway (loses sessions + codex login).",
+                )
+            return 1
+
+        try:
+            with multi.stage("recreate sandbox") as st:
+                st.info("recreating (this may take minutes)…")
+                # rm + create as ONE critical section — a concurrent
+                # ensure_up must not slip a create in between, or the
+                # import below would land in the other caller's sandbox.
+                sandbox.recreate(proj)
+        except sandbox.SandboxError as ex:
+            logger.error("sandbox recreate failed for %r: %s", proj.name, ex)
+            saved = (
+                f"\n  Exported state kept at {paths.sbx_rebuild_backup(name)}"
+                if state_blob is not None
+                else ""
+            )
+            for a in affected:
+                _fail_pane(a, f"sandbox recreate failed: {ex}{saved}")
+            return 1
+
+        if state_blob is not None:
+            with multi.stage("import state") as st:
+                try:
+                    sandbox.import_state(name, state_blob)
+                    imported = True
+                    paths.sbx_rebuild_backup(name).unlink(missing_ok=True)
+                except sandbox.SandboxError as ex:
+                    st.warn(
+                        f"state import failed — continuing fresh: {ex} "
+                        f"(archive kept at {paths.sbx_rebuild_backup(name)})"
+                    )
+                    logger.warning(
+                        "state import failed for %r", proj.name, exc_info=True
+                    )
+
+        # Rebuild deletes the installed codex hooks by construction —
+        # re-provision unconditionally, non-fatal like everywhere else.
+        with multi.stage("codex hooks") as st:
+            try:
+                codex_hooks.ensure_sandbox(name)
+            except Exception as ex:
+                st.warn(f"could not provision codex hooks: {type(ex).__name__}: {ex}")
+                logger.warning(
+                    "%s: codex hook provisioning failed (non-fatal)",
+                    proj.name,
+                    exc_info=True,
+                )
+    finally:
+        _close_reporters(files, affected)
+
+    if not imported:
+        # Persist the session-id clearing into the mappings, not just the
+        # immediate respawns: a codex slot held on the login-required
+        # placeholder never respawns here, so a stale id left in its slot
+        # would resurface as `codex resume <stale>` on the next restore
+        # (which only clears ids when IT recreated the sandbox).
+        for a in affected:
+            windows_mod.update_mapping(
+                a.mapping.window_id,
+                lambda m: (
+                    dataclasses.replace(
+                        m,
+                        agents=[
+                            dataclasses.replace(s, session_id=None) for s in m.agents
+                        ],
+                    )
+                    if m is not None
+                    else None
+                ),
+            )
+
+    # Sandbox is up; re-exec every live slot's pane, isolating failures.
+    failures = 0
+    for a, slot in live:
+        m = a.mapping
+        try:
+            if not imported and slot.kind == agent_kind.CODEX:
+                # Fresh VM has no codex login; holding the pane beats
+                # launching codex into an auth error loop.
+                startup.show_static_text(
+                    f"%{slot.pane_id}", sandbox.CODEX_LOGIN_RUNBOOK.format(name=name)
+                )
+                startup._write_pane_state(
+                    m.host_worktree, slot.pane_id, phase_value=phase.ERRORED
+                )
+                continue
+            cmd = exec_cmd.build(
+                proj,
+                branch=m.branch,
+                # Session files came along in the tar iff the import
+                # succeeded; a stale id would make `claude --resume` error.
+                session_id=slot.session_id if imported else None,
+                container_name=None,
+                kind=slot.kind,
+                label=m.window_id,
+            )
+            startup._respawn_with_retry(f"%{slot.pane_id}", cmd)
+            startup._write_pane_state(
+                m.host_worktree, slot.pane_id, phase_value=phase.STARTING
+            )
+            logger.info("%s: respawned pane=%%%s", m.window_id, slot.pane_id)
+        except Exception as ex:
+            failures += 1
+            logger.error("%s: respawn failed: %s", m.window_id, ex, exc_info=True)
+    logger.info(
+        "rebuilt sandbox %r; respawned %d/%d agent slot(s), state %s",
+        proj.name,
+        len(live) - failures,
+        len(live),
+        "restored" if imported else "discarded",
+    )
+    return 0 if failures == 0 else 1
+
+
 # ===== CLI =====
 
 
@@ -326,6 +551,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--no-cache", action="store_true", help="full from-scratch image rebuild"
+    )
+    p.add_argument(
+        "--discard-state",
+        action="store_true",
+        help="sandbox projects: skip the state export and rebuild destructively "
+        "(loses sessions, history, and the codex login)",
     )
     p.add_argument("--yes", "-y", action="store_true", help="skip confirmation")
     p.add_argument(
@@ -358,6 +589,18 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("worker: unknown project %r", project)
             return 2
         affected = _gather_affected(tmux.list_windows(tmux.SESSION)).get(project, [])
+        if proj.backend == config.BACKEND_SANDBOX:
+            return _run_sandbox_worker(
+                proj,
+                affected,
+                discard_state=args.discard_state,
+                no_cache=args.no_cache,
+            )
+        if args.discard_state:
+            logger.warning(
+                "--discard-state only applies to sandbox projects; ignored for %r",
+                proj.name,
+            )
         return _run_worker(proj, affected, no_cache=args.no_cache)
 
     eligible = {n: p for n, p in projects.items() if _eligible(p)}
@@ -390,13 +633,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     affected = by_project.get(project, [])
-    if not _confirm(project, affected, assume_yes=args.yes):
+    if not _confirm(
+        project,
+        affected,
+        assume_yes=args.yes,
+        is_sandbox=proj.backend == config.BACKEND_SANDBOX,
+    ):
         print("aborted", file=sys.stderr)
         return 0
 
     worker_argv = ["agent-rebuild", "--worker", "--project", project]
     if args.no_cache:
         worker_argv.append("--no-cache")
+    if args.discard_state:
+        worker_argv.append("--discard-state")
     tmux.run_shell_bg(shlex.join(worker_argv))
     print(
         f"rebuilding {project} in the background — watch its agent panes for progress"

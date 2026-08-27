@@ -37,10 +37,16 @@ devcontainer = true
 # Host-only project (exec_cmd is optional — see below)
 [scripts]
 repo = "/Users/you/dev/scripts"
+
+# Docker Sandboxes project (each agent in its own microVM — see below)
+[gateway]
+repo = "/Users/you/dev/gateway-service"
+sandbox = true
 ```
 
-Placeholders: `{repo}`, `{container}`, `{workdir}`, `{resume_args}`. For container projects
-`{workdir}` resolves inside the container; for host-only it resolves on the host.
+Placeholders: `{repo}`, `{container}`, `{sandbox}`, `{workdir}`, `{resume_args}`. For
+container projects `{workdir}` resolves inside the container; for host-only and sandbox
+projects it resolves on the host (sandboxes mount the workspace at its host path).
 `{resume_args}` expands to empty for a fresh agent and to a resume snippet (leading space
 included) when reviving a previous conversation — ` --resume <session_id>` for Claude,
 ` resume <session_id>` for Codex (Codex resumes via a subcommand, not a flag).
@@ -200,6 +206,60 @@ base_branch = "develop"
 Offline: if fetch fails but a cached `origin/<base>` ref exists, `agent-new`
 warns on stderr and uses the cached ref. If no remote ref is reachable at
 all, it falls back to creating the worktree from HEAD (with a warning).
+
+### Sandbox projects (Docker Sandboxes / sbx)
+
+`sandbox = true` runs the project's agents inside a [Docker
+Sandboxes](https://github.com/docker/sbx-releases) microVM — its own kernel,
+its own Docker daemon, host-enforced deny-by-default egress, and Claude's
+OAuth token proxy-injected by the host (the agent can spend it but never
+read it). The full design, threat model, and honest limits live in
+`docs/SANDBOX-MODE.md`.
+
+```toml
+[gateway]
+repo         = "/Users/you/dev/gateway-service"
+sandbox      = true
+# All optional:
+sbx_template = "gateway-sbx:0.3"      # default: stock claude template; avoid :latest
+sbx_kits     = ["https://github.com/you/dotfiles"]   # ordered kit refs
+sbx_mounts   = ["~/.kube:ro", "~/.databricks"]       # extra host dirs, ":ro" honored
+sbx_memory   = "8g"                   # sbx default: 50% of host RAM
+```
+
+- `sandbox` is mutually exclusive with `container`, `devcontainer`, `user`,
+  `container_workdir`, and `up_cmd`. The sandbox is named after the project.
+- The default `exec_cmd`/`codex_exec_cmd` run
+  `sbx exec -it … {sandbox} bash -lc 'cd {workdir} && exec claude{resume_args}'`
+  (codex identical) — `sbx exec` auto-starts a stopped sandbox, so there's
+  no `up_cmd`. `agent-new` creates the sandbox when it doesn't exist yet.
+- Worktrees stay host-side and are valid inside the VM (the workspace keeps
+  its host path). The state pipeline works unchanged via `-e TMUX_PANE`.
+- `sbx_mounts` is configure-once parity for infra credentials (`~/.kube`
+  and friends behave like devcontainer bind mounts). Prefer `:ro` wherever
+  the workflow allows — a writable global credential dir is a major grant.
+  Mounts are **create-time only**: changing them (or `sbx_template` /
+  `sbx_memory`) needs `agent-rebuild`.
+- `forward_ssh_agent` is a no-op: sbx forwards the host agent natively.
+- `agent-rebuild` on a sandbox project is **state-preserving**: sessions,
+  history, memory, and the in-sandbox codex login are exported, the sandbox
+  is recreated (new template/mounts/memory take effect), and the state is
+  imported back — conversations resume where they were. `--discard-state`
+  skips the export for a destructive reset.
+- `agent-vscode` attaches to the actual sandbox via Remote-SSH
+  (`sbx setup ssh` once; `--local` opens the host-side folder instead).
+  `agent-terminal` shells into the sandbox, never the host.
+
+One-time host setup (checked by preflight, not automated): install sbx
+(unpack the release tarball, symlink `bin/sbx` into `~/.local/bin`),
+`sbx login` (re-login every ~2 weeks — surfaced by the error messages when
+it lapses), `sbx daemon start -d --policy balanced`,
+`gh auth token | sbx secret set github` for private kit repos, `/login`
+inside the first claude pane, and — for the codex slot — a per-sandbox
+`codex login` (device-auth if your workspace allows it; otherwise bridge
+the callback port for the duration of the login:
+`sbx ports <name> --publish 1455:1455`, log in, `--unpublish 1455:1455`).
+Optionally `sbx skills import` to seed the shared skills store.
 
 ## Theming
 

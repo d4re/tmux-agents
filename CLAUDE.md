@@ -19,7 +19,7 @@ stale, update it before merging.
 
 A Python-packaged toolkit around a dedicated tmux socket/config that lets the
 user run 4–6 concurrent Claude Code agents, each typically inside a project's
-devcontainer. `agents` is the user's entry point; everything else is internal
+devcontainer or Docker Sandboxes microVM (`sandbox = true`). `agents` is the user's entry point; everything else is internal
 helpers wired into the status line and keybindings.
 
 ## Isolation model (non-obvious)
@@ -212,6 +212,13 @@ most ticks emit zero subprocess calls for window options.
   `TMUX_AGENTS_STATE_DIR` overrides work for tests.
 - `src/tmux_agents/tmux.py` — the only module that shells out to `tmux`. Add
   new tmux calls here, not inline.
+- `src/tmux_agents/sandbox.py` — the only module that shells out to `sbx`
+  (Docker Sandboxes, the third project backend: `sandbox = true` →
+  `Project.backend == BACKEND_SANDBOX`; dispatch on the backend enum, never
+  bolt onto `is_container`). Locked daemon start, race-free `ensure_up`
+  (returns True iff it CREATED — fresh VM means logins/sessions are gone),
+  atomic `deliver`, state `export_state`/`import_state` for the
+  state-preserving `agent-rebuild`. Design doc: `docs/SANDBOX-MODE.md`.
 - `src/tmux_agents/commands/*.py` — one file per CLI entry point, registered
   in `pyproject.toml` under `[project.scripts]`.
 - `tests/conftest.py` provides `tmp_state_dir` and `fixtures_dir` fixtures;

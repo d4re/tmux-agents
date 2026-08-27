@@ -6,6 +6,7 @@ import pytest
 from tmux_agents import (
     codex_hooks,
     gh_auth,
+    paths,
     phase,
     pickers,
     ssh_forward,
@@ -548,3 +549,224 @@ def test_main_worker_parent_detaches_without_running(
         lambda *a, **k: pytest.fail("parent must not run the worker"),
     )
     assert rebuild.main(["--worker", "--project", "webapp"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Sandbox backend: state-preserving recreate (docs/SANDBOX-MODE.md)
+# ---------------------------------------------------------------------------
+
+
+def _sandbox_proj(name="sbxproj", repo="/Users/me/dev/sbxproj"):
+    return Project(
+        name=name,
+        repo=Path(repo),
+        exec_cmd="claude{resume_args}",
+        codex_exec_cmd="codex{resume_args}",
+        sandbox=True,
+    )
+
+
+def _stub_sandbox(monkeypatch, *, present=True, created=True):
+    """Record-order stub of the whole sandbox module surface the rebuild
+    worker touches."""
+    from tmux_agents import sandbox as sandbox_mod
+
+    calls = SimpleNamespace(order=[])
+    monkeypatch.setattr(sandbox_mod, "is_present", lambda n: present)
+    monkeypatch.setattr(
+        sandbox_mod, "export_state", lambda n: calls.order.append("export") or b"TAR"
+    )
+    monkeypatch.setattr(sandbox_mod, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(
+        sandbox_mod, "recreate", lambda p: calls.order.append("recreate")
+    )
+    monkeypatch.setattr(
+        sandbox_mod, "import_state", lambda n, b: calls.order.append("import")
+    )
+    monkeypatch.setattr(
+        codex_hooks, "ensure_sandbox", lambda n: calls.order.append("hooks") or True
+    )
+    return calls
+
+
+def test_sandbox_projects_are_rebuild_eligible():
+    assert rebuild._eligible(_sandbox_proj()) is True
+
+
+def test_sandbox_worker_export_recreate_import_resumes(monkeypatch, tmp_state_dir):
+    """Happy path: export → rm → create → import → hooks; resume ids stay
+    valid because the session files came along in the tar."""
+    io = _stub_worker_io(monkeypatch)
+    calls = _stub_sandbox(monkeypatch)
+    proj = _sandbox_proj()
+    affected = [_affected(project="sbxproj", pane_id="23", session_id="sess-1")]
+
+    rc = rebuild._run_sandbox_worker(
+        proj, affected, discard_state=False, no_cache=False
+    )
+
+    assert rc == 0
+    assert calls.order == ["export", "recreate", "import", "hooks"]
+    assert ("%23", "claude --resume sess-1") in io.respawns
+    # Backup archive is deleted only after a successful import.
+    assert not paths.sbx_rebuild_backup("sbxproj").exists()
+
+
+def test_sandbox_worker_export_failure_aborts(monkeypatch, tmp_state_dir):
+    """Never delete what couldn't be saved: export failure → no rm, panes
+    show the failure + the --discard-state escape hatch."""
+    from tmux_agents import sandbox as sandbox_mod
+
+    _stub_worker_io(monkeypatch)
+    _stub_sandbox(monkeypatch)
+
+    def boom(n):
+        raise sandbox_mod.SandboxError("tar exploded")
+
+    monkeypatch.setattr(sandbox_mod, "export_state", boom)
+    monkeypatch.setattr(
+        sandbox_mod,
+        "recreate",
+        lambda p: pytest.fail("must not delete a sandbox whose state wasn't saved"),
+    )
+    texts = []
+    monkeypatch.setattr(
+        startup, "show_static_text", lambda pane, body: texts.append(body)
+    )
+
+    rc = rebuild._run_sandbox_worker(
+        _sandbox_proj(),
+        [_affected(project="sbxproj", pane_id="23")],
+        discard_state=False,
+        no_cache=False,
+    )
+
+    assert rc == 1
+    assert any("--discard-state" in t for t in texts)
+
+
+def test_sandbox_worker_import_failure_falls_back_fresh(monkeypatch, tmp_state_dir):
+    """Import failure → fresh-but-working fallback: resume ids cleared,
+    codex slot held on a login-required placeholder instead of launching
+    codex into an auth error loop."""
+    from tmux_agents import sandbox as sandbox_mod
+
+    io = _stub_worker_io(monkeypatch)
+    _stub_sandbox(monkeypatch)
+
+    def boom(n, b):
+        raise sandbox_mod.SandboxError("tar import exploded")
+
+    monkeypatch.setattr(sandbox_mod, "import_state", boom)
+    texts = []
+    monkeypatch.setattr(
+        startup, "show_static_text", lambda pane, body: texts.append((pane, body))
+    )
+
+    m = windows_mod.WindowMapping(
+        window_id="@7",
+        project="sbxproj",
+        branch="feat-x",
+        host_worktree=Path("/wt"),
+        pane_id="23",
+        claude_session_id="sess-1",
+        agents=[
+            windows_mod.AgentSlot(kind="claude", pane_id="23", session_id="sess-1"),
+            windows_mod.AgentSlot(kind="codex", pane_id="30", session_id="c-sess"),
+        ],
+    )
+    affected = [
+        rebuild.Affected(
+            mapping=m, window_name="sbxproj:feat-x", state_letter="I", busy=False
+        )
+    ]
+    windows_mod.write_mapping(m)
+
+    rc = rebuild._run_sandbox_worker(
+        _sandbox_proj(), affected, discard_state=False, no_cache=False
+    )
+
+    assert rc == 0
+    claude_respawns = [
+        (p, c) for p, c in io.respawns if "claude" in c and "tail -F" not in c
+    ]
+    assert claude_respawns == [("%23", "claude")]  # no stale --resume
+    assert any("codex login" in body for pane, body in texts if pane == "%30")
+    assert ("30", phase.ERRORED) in io.states
+    # The clearing must be PERSISTED: the held codex slot never respawns, so
+    # a stale id left in the mapping would become `codex resume <stale>` on
+    # the next restore (which only clears ids when IT recreated the sandbox).
+    fresh = windows_mod.read_mapping("@7")
+    assert all(s.session_id is None for s in fresh.agents)
+    # The exported archive survives an import failure for manual recovery.
+    assert paths.sbx_rebuild_backup("sbxproj").read_bytes() == b"TAR"
+
+
+def test_sandbox_worker_discard_state_skips_export(monkeypatch, tmp_state_dir):
+    from tmux_agents import sandbox as sandbox_mod
+
+    _stub_worker_io(monkeypatch)
+    calls = _stub_sandbox(monkeypatch)
+    monkeypatch.setattr(
+        sandbox_mod,
+        "export_state",
+        lambda n: pytest.fail("--discard-state must skip the export"),
+    )
+
+    rc = rebuild._run_sandbox_worker(
+        _sandbox_proj(),
+        [_affected(project="sbxproj", pane_id="23")],
+        discard_state=True,
+        no_cache=False,
+    )
+
+    assert rc == 0
+    assert calls.order == ["recreate", "hooks"]
+
+
+def test_main_worker_dispatches_sandbox_project(
+    monkeypatch, tmp_config_dir, tmp_state_dir
+):
+    import os as _os
+
+    repo = tmp_config_dir / "sbxrepo"
+    repo.mkdir()
+    _write_projects(tmp_config_dir, f'[sbxproj]\nrepo = "{repo}"\nsandbox = true\n')
+    monkeypatch.setattr(_os, "fork", lambda: 0)
+    monkeypatch.setattr(_os, "setsid", lambda: None)
+    monkeypatch.setattr(startup, "_detach_stdio", lambda: None)
+    monkeypatch.setattr(tmux, "list_windows", lambda s: [])
+    seen = {}
+
+    def fake_worker(proj, affected, *, discard_state, no_cache):
+        seen.update(project=proj.name, discard_state=discard_state, no_cache=no_cache)
+        return 0
+
+    monkeypatch.setattr(rebuild, "_run_sandbox_worker", fake_worker)
+    monkeypatch.setattr(
+        rebuild,
+        "_run_worker",
+        lambda *a, **k: pytest.fail("container worker wrong for sandbox"),
+    )
+
+    rc = rebuild.main(["--worker", "--project", "sbxproj", "--discard-state"])
+
+    assert rc == 0
+    assert seen == {"project": "sbxproj", "discard_state": True, "no_cache": False}
+
+
+def test_main_interactive_threads_discard_state(
+    monkeypatch, tmp_config_dir, tmp_state_dir
+):
+    repo = tmp_config_dir / "sbxrepo"
+    repo.mkdir()
+    _write_projects(tmp_config_dir, f'[sbxproj]\nrepo = "{repo}"\nsandbox = true\n')
+    monkeypatch.setattr(tmux, "list_windows", lambda s: [])
+    fired = []
+    monkeypatch.setattr(tmux, "run_shell_bg", lambda cmd: fired.append(cmd))
+
+    rc = rebuild.main(["sbxproj", "--yes", "--discard-state"])
+
+    assert rc == 0
+    assert len(fired) == 1
+    assert "--discard-state" in fired[0]

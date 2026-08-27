@@ -63,6 +63,27 @@ def window_mapping_lock(window_id: str) -> Path:
     return windows_dir() / f"{window_id}.json.lock"
 
 
+def sbx_daemon_lock() -> Path:
+    """Serializes sbx daemon startup across concurrent workers (never held
+    together with any other lock)."""
+    return state_dir() / "sbx-daemon.lock"
+
+
+def sbx_create_lock(name: str) -> Path:
+    """Per-sandbox-name creation lock: inspect -> create -> re-inspect (and
+    rebuild's rm -> create) runs as one critical section (never held
+    together with any other lock)."""
+    return state_dir() / f"sbx-create-{name}.lock"
+
+
+def sbx_rebuild_backup(name: str) -> Path:
+    """Host-side copy of a sandbox's exported state during agent-rebuild.
+    Written (0600, fsync'd) BEFORE `sbx rm` and deleted only after a
+    successful import — a worker crash or import failure between the two
+    leaves the archive here for manual recovery."""
+    return state_dir() / f"sbx-rebuild-{name}.tar"
+
+
 def worktree_cleanup_lock(worktree: Path) -> Path:
     """Guards destructive per-pane cleanup/scrubbing and slot-liveness
     publication for this worktree (NOT the hooks' own writes)."""

@@ -14,6 +14,15 @@ class ConfigError(ValueError):
     pass
 
 
+# The three project backends. `sandbox = true` is the external spelling, but
+# internally this is a backend, not a boolean: every Docker-vs-host
+# assumption behind `is_container` is wrong for sandboxes in a different
+# way, so consumers dispatch on `Project.backend` (see docs/SANDBOX-MODE.md).
+BACKEND_HOST = "host"
+BACKEND_CONTAINER = "container"
+BACKEND_SANDBOX = "sandbox"
+
+
 _DEFAULT_USER = "vscode"
 _CONTAINER_DEFAULT_UP_CMD = "cd {repo} && devcontainer up --workspace-folder ."
 # macOS Application bundle binary used as the fallback for `agent-vscode`
@@ -33,6 +42,13 @@ _CONTAINER_BODY_WITH_FORWARD_TMPL = (
     "cd {{workdir}} && exec {exe}{{resume_args}}'"
 )
 _CONTAINER_BODY_NO_FORWARD_TMPL = "'cd {{workdir}} && exec {exe}{{resume_args}}'"
+# `sbx exec` auto-starts a stopped sandbox and forwards TMUX_PANE, so the
+# state pipeline works unchanged; only the daemon must already run. No SSH
+# pump/env: sbx forwards the host agent natively.
+_SANDBOX_EXEC_CMD_TMPL = (
+    "sbx exec -it -e TERM -e COLORTERM -e TMUX_PANE -e TMUX_AGENTS_AGENT=1 "
+    "{{sandbox}} bash -lc 'cd {{workdir}} && exec {exe}{{resume_args}}'"
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +63,10 @@ class Project:
     user: str | None = None
     forward_ssh_agent: bool = True
     share_gh_auth: bool = True
+    # True iff `forward_ssh_agent` was set in projects.toml (vs the default).
+    # Sandbox mode uses it to warn only on an explicit key: sbx forwards the
+    # host agent natively and the Docker SSH pump must never spawn.
+    forward_ssh_agent_explicit: bool = False
     base_branch: str | None = None
     # True iff `up_cmd` came from projects.toml rather than the auto-default.
     # `agent-rebuild` uses this to tell a real recipe from the devcontainer
@@ -61,13 +81,35 @@ class Project:
     # pre-flight is skipped when this is True.
     exec_cmd_explicit: bool = False
     codex_exec_cmd_explicit: bool = False
+    sandbox: bool = False
+    sbx_template: str | None = None
+    sbx_kits: tuple[str, ...] = ()
+    # Canonical `path` / `path:ro` strings, `~` expanded, ready for
+    # `sbx create` argv (extra host workspaces, absolute paths preserved
+    # inside the VM — create-time only, changing them needs agent-rebuild).
+    sbx_mounts: tuple[str, ...] = ()
+    sbx_memory: str | None = None
 
     def exec_cmd_for(self, kind: str) -> str:
         return self.exec_cmd if kind == agent_kind.CLAUDE else self.codex_exec_cmd
 
     @property
+    def backend(self) -> str:
+        if self.sandbox:
+            return BACKEND_SANDBOX
+        if self.container is not None or self.devcontainer:
+            return BACKEND_CONTAINER
+        return BACKEND_HOST
+
+    @property
     def is_container(self) -> bool:
-        return self.container is not None or self.devcontainer
+        return self.backend == BACKEND_CONTAINER
+
+    @property
+    def sandbox_name(self) -> str:
+        # Sandbox name = project name (host-global; a collision override key
+        # is deliberately deferred as YAGNI — see docs/SANDBOX-MODE.md).
+        return self.name
 
     def workdir_for(self, branch: str | None) -> str:
         if self.is_container:
@@ -96,7 +138,37 @@ class Project:
             container=container_name or self.container or "",
             workdir=self.workdir_for(branch),
             resume_args=resume_args,
+            sandbox=self.sandbox_name if self.sandbox else "",
         )
+
+
+_SBX_KEYS = ("sbx_template", "sbx_kits", "sbx_mounts", "sbx_memory")
+
+
+def _parse_sbx_mounts(name: str, raw: object) -> tuple[str, ...]:
+    """Normalize `sbx_mounts` entries to canonical `path[:ro]` strings ready
+    for `sbx create` argv: `~` expanded in Python (subprocess argv gets no
+    shell expansion), paths resolved, duplicates and missing paths rejected."""
+    if not isinstance(raw, list) or not all(isinstance(m, str) for m in raw):
+        raise ConfigError(f"project {name!r}: 'sbx_mounts' must be a list of strings")
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in raw:
+        ro = m.endswith(":ro")
+        path_part = m[:-3] if ro else m
+        p = Path(path_part).expanduser()
+        if not p.is_absolute():
+            raise ConfigError(
+                f"project {name!r}: sbx_mount {m!r} must be an absolute or ~-based path"
+            )
+        p = p.resolve()
+        if not p.exists():
+            raise ConfigError(f"project {name!r}: sbx_mount {m!r} does not exist")
+        if str(p) in seen:
+            raise ConfigError(f"project {name!r}: duplicate sbx_mount {m!r}")
+        seen.add(str(p))
+        out.append(f"{p}:ro" if ro else str(p))
+    return tuple(out)
 
 
 def safe_load(path: Path, *, on_error=None) -> dict[str, Project]:
@@ -129,13 +201,53 @@ def load(path: Path) -> dict[str, Project]:
             continue
         if "repo" not in entry:
             raise ConfigError(f"project {name!r} is missing required field 'repo'")
+        sandbox = entry.get("sandbox", False)
+        if not isinstance(sandbox, bool):
+            raise ConfigError(f"project {name!r}: 'sandbox' must be a boolean")
+        if sandbox:
+            for key in (
+                "container",
+                "devcontainer",
+                "user",
+                "container_workdir",
+                "up_cmd",
+            ):
+                if key in entry:
+                    raise ConfigError(
+                        f"project {name!r}: 'sandbox' is mutually exclusive with {key!r}"
+                    )
+        if not sandbox:
+            for key in _SBX_KEYS:
+                if key in entry:
+                    raise ConfigError(
+                        f"project {name!r}: {key!r} requires 'sandbox = true'"
+                    )
+        sbx_template = entry.get("sbx_template")
+        if sbx_template is not None and not isinstance(sbx_template, str):
+            raise ConfigError(f"project {name!r}: 'sbx_template' must be a string")
+        sbx_kits_raw = entry.get("sbx_kits", [])
+        if not isinstance(sbx_kits_raw, list) or not all(
+            isinstance(k, str) for k in sbx_kits_raw
+        ):
+            raise ConfigError(f"project {name!r}: 'sbx_kits' must be a list of strings")
+        sbx_memory = entry.get("sbx_memory")
+        if sbx_memory is not None and not isinstance(sbx_memory, str):
+            raise ConfigError(f"project {name!r}: 'sbx_memory' must be a string")
+        sbx_mounts = _parse_sbx_mounts(name, entry.get("sbx_mounts", []))
         devcontainer = bool(entry.get("devcontainer", False))
         container = entry.get("container")
         if container is not None and devcontainer:
             raise ConfigError(
                 f"project {name!r}: set either 'container' or 'devcontainer = true', not both"
             )
-        is_container = devcontainer or container is not None
+        backend = (
+            BACKEND_SANDBOX
+            if sandbox
+            else BACKEND_CONTAINER
+            if (devcontainer or container is not None)
+            else BACKEND_HOST
+        )
+        is_container = backend == BACKEND_CONTAINER
         user = entry.get("user")
         exec_cmd = entry.get("exec_cmd")
         if user is not None and exec_cmd is not None:
@@ -143,11 +255,16 @@ def load(path: Path) -> dict[str, Project]:
                 f"project {name!r}: 'user' is for the default exec_cmd; "
                 "set one or the other, not both"
             )
-        forward_ssh_agent = bool(entry.get("forward_ssh_agent", True))
+        forward_ssh_agent = entry.get("forward_ssh_agent", True)
+        if not isinstance(forward_ssh_agent, bool):
+            raise ConfigError(
+                f"project {name!r}: 'forward_ssh_agent' must be a boolean"
+            )
+        forward_ssh_agent_explicit = "forward_ssh_agent" in entry
         exec_cmd_explicit = exec_cmd is not None
         if exec_cmd is None:
             exec_cmd = _default_exec_cmd(
-                is_container, forward_ssh_agent, user, exe=agent_kind.CLAUDE
+                backend, forward_ssh_agent, user, exe=agent_kind.CLAUDE
             )
         agent = entry.get("agent", default_agent)
         if agent not in agent_kind.KINDS:
@@ -158,7 +275,7 @@ def load(path: Path) -> dict[str, Project]:
         codex_exec_cmd_explicit = codex_exec_cmd is not None
         if codex_exec_cmd is None:
             codex_exec_cmd = _default_exec_cmd(
-                is_container, forward_ssh_agent, user, exe=agent_kind.CODEX
+                backend, forward_ssh_agent, user, exe=agent_kind.CODEX
             )
         up_cmd = entry.get("up_cmd")
         up_cmd_explicit = up_cmd is not None
@@ -175,12 +292,18 @@ def load(path: Path) -> dict[str, Project]:
             user=user,
             forward_ssh_agent=forward_ssh_agent,
             share_gh_auth=bool(entry.get("share_gh_auth", True)),
+            forward_ssh_agent_explicit=forward_ssh_agent_explicit,
             base_branch=entry.get("base_branch"),
             up_cmd_explicit=up_cmd_explicit,
             agent=agent,
             codex_exec_cmd=codex_exec_cmd,
             exec_cmd_explicit=exec_cmd_explicit,
             codex_exec_cmd_explicit=codex_exec_cmd_explicit,
+            sandbox=sandbox,
+            sbx_template=sbx_template,
+            sbx_kits=tuple(sbx_kits_raw),
+            sbx_mounts=sbx_mounts,
+            sbx_memory=sbx_memory,
         )
     return projects
 
@@ -201,9 +324,11 @@ def read_code_path(path: Path) -> str:
 
 
 def _default_exec_cmd(
-    is_container: bool, forward_ssh_agent: bool, user: str | None, *, exe: str
+    backend: str, forward_ssh_agent: bool, user: str | None, *, exe: str
 ) -> str:
-    if not is_container:
+    if backend == BACKEND_SANDBOX:
+        return _SANDBOX_EXEC_CMD_TMPL.format(exe=exe)
+    if backend == BACKEND_HOST:
         return _HOST_ONLY_EXEC_CMD_TMPL.format(exe=exe)
     body = (
         _CONTAINER_BODY_WITH_FORWARD_TMPL

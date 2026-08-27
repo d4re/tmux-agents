@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 
 from tmux_agents import config, container, logging_setup, paths, tmux
 from tmux_agents import windows as windows_mod
@@ -49,6 +50,30 @@ def _exec_container(proj: config.Project, mapping: windows_mod.WindowMapping) ->
     return 0  # unreachable in production
 
 
+def _exec_sandbox(proj: config.Project, mapping: windows_mod.WindowMapping) -> int:
+    """Shell INSIDE the sandbox — a host shell for a sandbox project would
+    be a silent isolation hole. `sbx exec` auto-starts a stopped sandbox;
+    worktree paths are host-identical (passthrough), so cd works as-is."""
+    workdir = proj.workdir_for(mapping.branch)
+    argv = [
+        "sbx",
+        "exec",
+        "-it",
+        "-e",
+        "TERM",
+        "-e",
+        "COLORTERM",
+        "-e",
+        "TMUX_PANE",
+        proj.sandbox_name,
+        "bash",
+        "-lc",
+        f"cd {shlex.quote(workdir)} && exec bash -il",
+    ]
+    os.execvp("sbx", argv)
+    return 0  # unreachable in production
+
+
 def main(argv: list[str] | None = None) -> int:
     logging_setup.setup_logging()
     parser = argparse.ArgumentParser(prog="agent-terminal")
@@ -62,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     if proj is None:
         return _fail(f"project {mapping.project!r} not in projects.toml")
 
+    if proj.backend == config.BACKEND_SANDBOX:
+        return _exec_sandbox(proj, mapping)
     if proj.is_container:
         return _exec_container(proj, mapping)
     return _exec_host(mapping)

@@ -1628,3 +1628,153 @@ def test_new_provision_respawns_codex_when_project_default_is_codex(
     assert rc == 0
     assert "codex" in captured["cmd"]
     assert "claude" not in captured["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# Sandbox backend (docs/SANDBOX-MODE.md)
+# ---------------------------------------------------------------------------
+
+
+def _sandbox_provision_env(
+    monkeypatch, tmp_config_dir, tmp_path, *, toml_extra="", daemon_boom=None
+):
+    """Sandbox twin of _provision_env: stubs the sandbox module instead of
+    container, and makes any ssh-pump spawn a test failure (sbx forwards
+    the host agent natively — the Docker pump must never run)."""
+    import os as _os
+    import pytest as _pytest
+    from tmux_agents import (
+        worktree,
+        provisioning,
+        ssh_forward,
+        startup,
+        codex_hooks,
+        sandbox as sandbox_mod,
+    )
+    from tmux_agents import windows as windows_mod
+
+    repo = tmp_path / "sbxrepo"
+    repo.mkdir(exist_ok=True)
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[sbxproj]\nrepo = "{repo}"\nsandbox = true\n{toml_extra}'
+    )
+    cap = SimpleNamespace(
+        respawns=[], static_texts=[], holds=[], states=[], sandbox_calls=[]
+    )
+    monkeypatch.setattr(_os, "fork", lambda: 0)
+    monkeypatch.setattr(_os, "setsid", lambda: None)
+    monkeypatch.setattr(startup, "_detach_stdio", lambda: None)
+    windows_mod.write_mapping(
+        windows_mod.WindowMapping(
+            window_id="@5",
+            project="sbxproj",
+            branch=None,
+            host_worktree=repo,
+            pane_id="23",
+            phase_hint="starting",
+        )
+    )
+    if daemon_boom is not None:
+
+        def _daemon():
+            raise daemon_boom
+
+        monkeypatch.setattr(sandbox_mod, "ensure_daemon", _daemon)
+    else:
+        monkeypatch.setattr(
+            sandbox_mod, "ensure_daemon", lambda: cap.sandbox_calls.append("daemon")
+        )
+    monkeypatch.setattr(
+        sandbox_mod, "ensure_up", lambda p: cap.sandbox_calls.append("up") or False
+    )
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_sandbox",
+        lambda name: cap.sandbox_calls.append(("hooks", name)) or True,
+    )
+    monkeypatch.setattr(
+        codex_hooks,
+        "ensure_host",
+        lambda: _pytest.fail("host codex hooks wrong for sandbox project"),
+    )
+    monkeypatch.setattr(
+        ssh_forward,
+        "maybe_spawn_pump",
+        lambda *a, **k: _pytest.fail("ssh pump must never spawn for sandbox projects"),
+    )
+    monkeypatch.setattr(worktree, "resolve", lambda *a, **k: repo)
+    monkeypatch.setattr(worktree, "check_freshness", lambda *a, **k: None)
+    monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **k: True)
+    monkeypatch.setattr(
+        startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
+    )
+    monkeypatch.setattr(
+        startup,
+        "show_static_text",
+        lambda pid, text: cap.static_texts.append((pid, text)),
+    )
+    monkeypatch.setattr(
+        startup,
+        "hold_pane_then_exec",
+        lambda pid, log, cmd: cap.holds.append((pid, cmd)),
+    )
+    monkeypatch.setattr(
+        startup,
+        "_write_pane_state",
+        lambda wt, pid, *, phase_value: cap.states.append(phase_value),
+    )
+    return cap
+
+
+def test_provision_sandbox_happy_path(monkeypatch, tmp_config_dir, tmp_path):
+    cap = _sandbox_provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "sbxproj"]
+    )
+    assert rc == 0
+    assert cap.sandbox_calls == ["daemon", "up", ("hooks", "sbxproj")]
+    assert len(cap.respawns) == 1
+    _, cmd = cap.respawns[0]
+    assert cmd.startswith("sbx exec")
+    assert " sbxproj " in cmd
+    assert cap.holds == []
+
+
+def test_provision_sandbox_failure_surfaces_remediation(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    from tmux_agents import sandbox as sandbox_mod
+
+    cap = _sandbox_provision_env(
+        monkeypatch,
+        tmp_config_dir,
+        tmp_path,
+        daemon_boom=sandbox_mod.SandboxError(sandbox_mod.LOGIN_HINT),
+    )
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "sbxproj"]
+    )
+    assert rc == 4
+    assert any("sbx login" in text for _, text in cap.static_texts)
+    assert cap.respawns == []
+
+
+def test_provision_sandbox_warns_on_explicit_forward_ssh_agent(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    _sandbox_provision_env(
+        monkeypatch, tmp_config_dir, tmp_path, toml_extra="forward_ssh_agent = true\n"
+    )
+    # The tmux_agents logger doesn't propagate (file handler only), so
+    # capture the module logger's warning call directly.
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        new.logger,
+        "warning",
+        lambda msg, *a, **k: warnings.append(msg % a if a else msg),
+    )
+    rc = new.main(
+        ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "sbxproj"]
+    )
+    assert rc == 0  # no-op-with-warning, never fatal, never a pump
+    assert any("no-op in sandbox mode" in w for w in warnings)

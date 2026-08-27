@@ -183,3 +183,79 @@ def test_host_branchless_uses_repo_root(monkeypatch, tmp_config_dir, tmp_path):
     rc = vscode.main(["--window-id", "@6"])
     assert rc == 0
     assert called == [[CODE_BIN, str(repo)]]
+
+
+# ===== Sandbox backend =====
+
+
+def _sandbox_setup(tmp_config_dir, tmp_path):
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    worktree = repo / ".worktrees" / "feat-x"
+    worktree.mkdir(parents=True)
+    _write_projects(tmp_config_dir, f'[svc]\nrepo = "{repo}"\nsandbox = true\n')
+    _write_mapping("@1", project="svc", branch="feat-x", host_worktree=worktree)
+    return worktree
+
+
+def test_sandbox_project_uses_remote_ssh(monkeypatch, tmp_config_dir, tmp_path):
+    worktree = _sandbox_setup(tmp_config_dir, tmp_path)
+    called = _stub_subprocess(monkeypatch)
+    monkeypatch.setattr(vscode, "_ssh_host_configured", lambda host: True)
+
+    rc = vscode.main(["--window-id", "@1"])
+
+    assert rc == 0
+    assert called == [[CODE_BIN, "--remote", "ssh-remote+svc.sbx", str(worktree)]]
+
+
+def test_sandbox_ssh_unconfigured_prints_fix(
+    monkeypatch, tmp_config_dir, tmp_path, capsys
+):
+    _sandbox_setup(tmp_config_dir, tmp_path)
+    called = _stub_subprocess(monkeypatch)
+    monkeypatch.setattr(vscode, "_ssh_host_configured", lambda host: False)
+
+    rc = vscode.main(["--window-id", "@1"])
+
+    assert rc == 1
+    assert called == []
+    assert "sbx setup ssh" in capsys.readouterr().err
+
+
+def test_sandbox_local_flag_opens_host_folder(monkeypatch, tmp_config_dir, tmp_path):
+    """Passthrough means host paths are the same files — useful when the
+    experimental SSH support is down."""
+    worktree = _sandbox_setup(tmp_config_dir, tmp_path)
+    called = _stub_subprocess(monkeypatch)
+    monkeypatch.setattr(
+        vscode,
+        "_ssh_host_configured",
+        lambda host: (_ for _ in ()).throw(AssertionError("--local must skip SSH")),
+    )
+
+    rc = vscode.main(["--window-id", "@1", "--local"])
+
+    assert rc == 0
+    assert called == [[CODE_BIN, str(worktree)]]
+
+
+def test_ssh_host_configured_parses_ssh_g(monkeypatch):
+    import subprocess as _subprocess
+
+    def run_hit(argv, **kw):
+        assert argv[:2] == ["ssh", "-G"]
+        return _subprocess.CompletedProcess(
+            argv, 0, "user remi\nhostname 127.0.0.1\nproxycommand something\n", ""
+        )
+
+    monkeypatch.setattr(vscode.subprocess, "run", run_hit)
+    assert vscode._ssh_host_configured("acg.sbx") is True
+
+    def run_miss(argv, **kw):
+        return _subprocess.CompletedProcess(
+            argv, 0, "user remi\nhostname acg.sbx\n", ""
+        )
+
+    monkeypatch.setattr(vscode.subprocess, "run", run_miss)
+    assert vscode._ssh_host_configured("acg.sbx") is False
