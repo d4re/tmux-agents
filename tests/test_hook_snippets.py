@@ -166,6 +166,10 @@ CRON_DELETE_PAYLOAD = '{"tool_name":"CronDelete","tool_input":{"id":"aa7dd6dd"},
 WAKEUP_PAYLOAD = '{"tool_name":"ScheduleWakeup","tool_input":{"delaySeconds":60},"tool_response":{"scheduledFor":1780327440000,"clampedDelaySeconds":60,"wasClamped":false}}'
 BG_SUBAGENT_PAYLOAD = '{"tool_name":"Agent","tool_input":{"run_in_background":true},"tool_response":{"isAsync":true,"agentId":"ac7ea5fc7db584902"}}'
 FG_SUBAGENT_PAYLOAD = '{"tool_name":"Agent","tool_input":{"run_in_background":false},"tool_response":{"agentId":"deadbeef"}}'
+# Current Claude Code: the Agent tool has no run_in_background input at all —
+# every subagent launches async. The launch is signalled in tool_response
+# ({"isAsync":true,"status":"async_launched"}). Shape captured from a live hook.
+ASYNC_SUBAGENT_PAYLOAD = '{"hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"probe","prompt":"x","model":"haiku"},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"a96878d323c3010fc","description":"probe","outputFile":"/tmp/t.output","canReadOutputFile":true}}'
 BG_SHELL_PAYLOAD = '{"tool_name":"Bash","tool_input":{"command":"x","run_in_background":true},"tool_response":{"backgroundTaskId":"ba861qi9a"}}'
 FG_SHELL_PAYLOAD = '{"tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"","backgroundTaskId":""}}'
 # A subagent's own tool-uses fire the parent pane's hooks (it inherits
@@ -243,6 +247,21 @@ def test_add_subagent_only_when_background(project):
         _hook_cmd(t, "PostToolUse", matcher="Agent"), _env(project), BG_SUBAGENT_PAYLOAD
     )
     assert (_pending(project) / "subagent__ac7ea5fc7db584902").exists()
+
+
+def test_add_subagent_new_format_without_run_in_background(project):
+    """Current Claude Code launches every subagent async and dropped the
+    run_in_background input; the async launch shows only in tool_response
+    (isAsync/status). The marker must still be written."""
+    t = json.loads(TEMPLATE.read_text())
+    _run(_hook_cmd(t, "SessionStart"), _env(project))
+    r = _run_with_input(
+        _hook_cmd(t, "PostToolUse", matcher="Agent"),
+        _env(project),
+        ASYNC_SUBAGENT_PAYLOAD,
+    )
+    assert r.returncode == 0, r.stderr
+    assert (_pending(project) / "subagent__a96878d323c3010fc").exists()
 
 
 def test_add_bgshell_only_when_background(project):

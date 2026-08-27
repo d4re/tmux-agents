@@ -10,7 +10,7 @@
 #   write-state.sh add-wakeup   # PostToolUse ScheduleWakeup: marker from scheduledFor
 #   write-state.sh add-cron     # PostToolUse CronCreate: oneshot/recur marker
 #   write-state.sh del-cron     # PostToolUse CronDelete: remove cron marker
-#   write-state.sh add-subagent # PostToolUse Agent: marker iff run_in_background
+#   write-state.sh add-subagent # PostToolUse Agent: marker iff async launch
 #   write-state.sh add-bgshell  # PostToolUse Bash: marker iff run_in_background
 #   write-state.sh clear-completed # UserPromptSubmit: reap markers on <task-notification>
 #   write-state.sh reconcile    # Stop/StopFailure: reap bg markers absent from background_tasks
@@ -70,6 +70,12 @@ extract_cron() {
 is_background() {
   printf '%s' "$1" | grep -q '"run_in_background"[[:space:]]*:[[:space:]]*true'
 }
+# Current Claude Code dropped the Agent tool's run_in_background input — every
+# subagent launches async, signalled only in tool_response ("isAsync":true,
+# "status":"async_launched"). A synchronous result (older clients) has neither.
+is_async_launch() {
+  printf '%s' "$1" | grep -q '"isAsync"[[:space:]]*:[[:space:]]*true'
+}
 # A subagent inherits the parent's TMUX_PANE, so its own tool-uses fire the
 # parent pane's hooks. Those PostToolUse payloads carry `agent_id`/`agent_type`;
 # main-agent payloads never do. Skip them so the pane tracks the MAIN agent only
@@ -121,7 +127,7 @@ case "$1" in
   add-subagent)
     payload=$(read_payload)
     is_subagent "$payload" && exit 0   # nested subagent — don't track under parent
-    is_background "$payload" || exit 0
+    is_background "$payload" || is_async_launch "$payload" || exit 0
     aid=$(extract_str "$payload" agentId)
     [ -n "$aid" ] || exit 0
     write_marker "subagent__${aid}" ""
