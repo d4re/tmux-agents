@@ -2654,3 +2654,262 @@ def test_execute_codex_hooks_failure_is_nonfatal(
     assert len(claude_respawns) == 1
     assert claude_respawns[0][0] == "%99"
     assert any("codex hook" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Sandbox backend (docs/SANDBOX-MODE.md — Session restore integration)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sandbox_projects_file(tmp_path, tmp_config_dir):
+    p = tmp_config_dir / "projects.toml"
+    p.write_text(
+        "[sbxproj]\n"
+        f'repo = "{tmp_path}/sbxproj"\n'
+        "sandbox = true\n"
+        "\n"
+        "[sbxtwo]\n"
+        f'repo = "{tmp_path}/sbxtwo"\n'
+        "sandbox = true\n"
+    )
+    (tmp_path / "sbxproj").mkdir()
+    (tmp_path / "sbxtwo").mkdir()
+    return p
+
+
+def _stub_restore_tmux(monkeypatch):
+    from tmux_agents import provisioning, tmux
+
+    monkeypatch.setattr(tmux, "session_exists", lambda s: True)
+    monkeypatch.setattr(tmux, "new_window", lambda s, *, name, command: f"@new-{name}")
+    monkeypatch.setattr(tmux, "set_window_option", lambda *a, **k: None)
+    monkeypatch.setattr(tmux, "active_pane_id", lambda wid: f"%{wid[5:]}")
+    monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **kw: True)
+    respawns: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tmux,
+        "respawn_pane",
+        lambda pane_id, *, command: respawns.append((pane_id, command)),
+    )
+    return respawns
+
+
+def _forbid_container_path(monkeypatch):
+    from tmux_agents import container, ssh_forward
+
+    monkeypatch.setattr(
+        container,
+        "ensure_up",
+        lambda *a, **k: pytest.fail("container path wrong for sandbox project"),
+    )
+    monkeypatch.setattr(
+        ssh_forward,
+        "maybe_spawn_pump",
+        lambda *a, **k: pytest.fail("ssh pump must never spawn for sandbox projects"),
+    )
+
+
+def test_execute_plan_sandbox_ensures_up_hooks_and_daemon_once(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, sandbox_projects_file
+):
+    """Two sandbox project groups: the daemon is ensured ONCE before the
+    parallel wave; each group gets ensure_up + codex-hook healing; resume
+    ids survive when the sandbox was NOT recreated."""
+    from tmux_agents import codex_hooks
+    from tmux_agents import sandbox as sandbox_mod
+    from tmux_agents.commands import restore
+
+    _write_snapshot(
+        "@1",
+        project="sbxproj",
+        branch=None,
+        host_worktree=tmp_path / "sbxproj",
+        window_index=1,
+        session_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    )
+    _write_snapshot(
+        "@2",
+        project="sbxtwo",
+        branch=None,
+        host_worktree=tmp_path / "sbxtwo",
+        window_index=2,
+    )
+    respawns = _stub_restore_tmux(monkeypatch)
+    _forbid_container_path(monkeypatch)
+    daemon_calls: list[int] = []
+    ups: list[str] = []
+    hooks: list[str] = []
+    monkeypatch.setattr(sandbox_mod, "ensure_daemon", lambda: daemon_calls.append(1))
+    monkeypatch.setattr(sandbox_mod, "ensure_up", lambda p: ups.append(p.name) or False)
+    monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: hooks.append(name))
+
+    projs = _load_test_projects(sandbox_projects_file)
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+    assert daemon_calls == [1]
+    assert sorted(ups) == ["sbxproj", "sbxtwo"]
+    assert sorted(hooks) == ["sbxproj", "sbxtwo"]
+    finals = [c for _, c in respawns if "tail -F" not in c]
+    assert len(finals) == 2
+    assert all(c.startswith("sbx exec") for c in finals)
+    resumed = [c for c in finals if "--resume" in c]
+    assert len(resumed) == 1
+    assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in resumed[0]
+
+
+def test_execute_plan_recreated_sandbox_clears_stale_session_ids(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, sandbox_projects_file
+):
+    """ensure_up returning True (created fresh) means the old session files
+    died with the VM — claude --resume <stale-id> would error, so resume
+    args must be dropped."""
+    from tmux_agents import codex_hooks
+    from tmux_agents import sandbox as sandbox_mod
+    from tmux_agents.commands import restore
+
+    _write_snapshot(
+        "@1",
+        project="sbxproj",
+        branch=None,
+        host_worktree=tmp_path / "sbxproj",
+        window_index=1,
+        session_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    )
+    respawns = _stub_restore_tmux(monkeypatch)
+    _forbid_container_path(monkeypatch)
+    monkeypatch.setattr(sandbox_mod, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(sandbox_mod, "ensure_up", lambda p: True)
+    monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: True)
+
+    projs = _load_test_projects(sandbox_projects_file)
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+    finals = [c for _, c in respawns if "tail -F" not in c]
+    assert len(finals) == 1
+    assert "--resume" not in finals[0]
+
+
+def test_execute_plan_sandbox_failure_marks_panes_with_hint(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, sandbox_projects_file
+):
+    from tmux_agents import codex_hooks, startup
+    from tmux_agents import sandbox as sandbox_mod
+    from tmux_agents.commands import restore
+
+    _write_snapshot(
+        "@1",
+        project="sbxproj",
+        branch=None,
+        host_worktree=tmp_path / "sbxproj",
+        window_index=1,
+    )
+    _stub_restore_tmux(monkeypatch)
+    _forbid_container_path(monkeypatch)
+    monkeypatch.setattr(sandbox_mod, "ensure_daemon", lambda: None)
+
+    def boom(p):
+        raise sandbox_mod.SandboxError(sandbox_mod.DAEMON_HINT)
+
+    monkeypatch.setattr(sandbox_mod, "ensure_up", boom)
+    monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: True)
+    texts: list[str] = []
+    monkeypatch.setattr(
+        startup, "show_static_text", lambda pid, text: texts.append(text)
+    )
+
+    projs = _load_test_projects(sandbox_projects_file)
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+    assert any("sbx daemon" in t for t in texts)
+
+
+def test_execute_plan_no_daemon_call_for_container_only_plan(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
+):
+    from tmux_agents import container
+    from tmux_agents import sandbox as sandbox_mod
+    from tmux_agents.commands import restore
+
+    _write_snapshot(
+        "@1",
+        project="scripts",
+        branch=None,
+        host_worktree=tmp_path / "scripts",
+        window_index=1,
+    )
+    _stub_restore_tmux(monkeypatch)
+    monkeypatch.setattr(container, "ensure_up", lambda *a, **k: "c")
+    monkeypatch.setattr(
+        sandbox_mod,
+        "ensure_daemon",
+        lambda: pytest.fail("no sandbox project in plan — daemon must not start"),
+    )
+
+    projs = _load_test_projects(projects_file)
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+
+def test_recreated_sandbox_holds_codex_slot_and_persists_id_clearing(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, sandbox_projects_file
+):
+    """A recreated sandbox has no codex login: the codex slot is held on
+    the login runbook (errored) instead of launching codex into an auth
+    error loop, and the session-id clearing is PERSISTED into the mapping
+    (a held slot never respawns, so a stale id would otherwise resurface
+    as `codex resume <stale>` on a later restore)."""
+    import json as _json
+
+    from tmux_agents import codex_hooks, paths, startup
+    from tmux_agents import sandbox as sandbox_mod
+    from tmux_agents import windows as windows_mod
+    from tmux_agents.commands import restore
+
+    paths.windows_previous_dir().mkdir(parents=True, exist_ok=True)
+    (paths.windows_previous_dir() / "@1.json").write_text(
+        _json.dumps(
+            {
+                "project": "sbxproj",
+                "branch": None,
+                "host_worktree": str(tmp_path / "sbxproj"),
+                "pane_id": "23",
+                "window_index": 1,
+                "agents": [
+                    {
+                        "kind": "codex",
+                        "pane_id": "23",
+                        "session_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                    }
+                ],
+            }
+        )
+    )
+    respawns = _stub_restore_tmux(monkeypatch)
+    _forbid_container_path(monkeypatch)
+    monkeypatch.setattr(sandbox_mod, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(sandbox_mod, "ensure_up", lambda p: True)  # recreated
+    monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: True)
+    texts: list[str] = []
+    monkeypatch.setattr(
+        startup, "show_static_text", lambda pid, text: texts.append(text)
+    )
+
+    projs = _load_test_projects(sandbox_projects_file)
+    plan = restore.plan_entries(live_panes={}, projects=projs)
+    placeholders = restore.pre_create_windows(plan, live_panes={})
+    restore.execute_plan(plan, placeholders, projs)
+
+    finals = [c for _, c in respawns if "tail -F" not in c]
+    assert finals == []  # held, not respawned
+    assert any("codex login" in t for t in texts)
+    new_window_id = next(iter(placeholders))
+    fresh = windows_mod.read_mapping(new_window_id)
+    assert all(s.session_id is None for s in fresh.agents)

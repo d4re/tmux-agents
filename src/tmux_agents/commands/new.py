@@ -26,6 +26,7 @@ from tmux_agents import (
     pickers,
     progress,
     provisioning,
+    sandbox,
     ssh_forward,
     startup,
     tmux,
@@ -175,7 +176,35 @@ def _provision(
 
             container_name: str | None = None
             container_workdir: str | None = None
-            if proj.is_container:
+            if proj.backend == config.BACKEND_SANDBOX:
+                try:
+                    with reporter.stage("sandbox") as st:
+                        sandbox.ensure_daemon()
+                        st.info("creating if absent (first time may take minutes)…")
+                        created = sandbox.ensure_up(proj)
+                        if created:
+                            st.info(
+                                "created fresh — claude /login and codex login "
+                                "required inside the sandbox"
+                            )
+                        else:
+                            st.skip("already present")
+                        if proj.forward_ssh_agent_explicit:
+                            # sbx forwards the host agent natively; the Docker
+                            # SSH pump must never spawn for sandboxes. st.info,
+                            # not st.warn — a no-op key shouldn't trigger the
+                            # warning hold on every spawn.
+                            st.info(
+                                "forward_ssh_agent is a no-op in sandbox mode "
+                                "(native forwarding)"
+                            )
+                            logger.warning(
+                                "%s: forward_ssh_agent is a no-op in sandbox mode",
+                                window_id,
+                            )
+                except sandbox.SandboxError as se:
+                    return _fatal(f"sandbox start failed: {se}")
+            elif proj.is_container:
                 try:
                     with reporter.stage("container") as st:
                         existing = container.current_name(proj)
@@ -276,7 +305,9 @@ def _provision(
 
             with reporter.stage("codex hooks") as st:
                 try:
-                    if proj.is_container:
+                    if proj.backend == config.BACKEND_SANDBOX:
+                        codex_hooks.ensure_sandbox(proj.sandbox_name)
+                    elif proj.is_container:
                         codex_hooks.ensure_container(
                             container_name, proj.user or "vscode"
                         )

@@ -34,6 +34,33 @@ def _resolve_code_cli() -> tuple[str | None, str]:
     return None, candidate
 
 
+def _ssh_host_configured(host: str) -> bool:
+    """`sbx setup ssh` provisions managed SSH config for `{name}.sbx`
+    hostnames. `ssh -G` resolves the effective config: an unmanaged host
+    keeps its literal name as `hostname` and has no proxycommand — that is
+    the "sbx setup ssh hasn't run / config broken" signal (SSH support is
+    upstream-experimental, so degrade with the fix, never opaquely)."""
+    try:
+        # Timeout: a `Match exec` clause in the user's ssh config can stall
+        # `ssh -G` indefinitely.
+        r = subprocess.run(
+            ["ssh", "-G", host], capture_output=True, text=True, timeout=10
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    if r.returncode != 0:
+        return False
+    for line in r.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "proxycommand":
+            return True
+        # ssh lowercases hostnames in -G output; compare case-insensitively
+        # so an uppercase project name doesn't false-positive as configured.
+        if key == "hostname" and value.lower() != host.lower():
+            return True
+    return False
+
+
 def _attached_container_uri(container_name: str, workdir: str) -> str:
     hex_name = container_name.encode("utf-8").hex()
     return f"vscode-remote://attached-container+{hex_name}{workdir}"
@@ -49,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     logging_setup.setup_logging()
     parser = argparse.ArgumentParser(prog="agent-vscode")
     parser.add_argument("--window-id", required=True)
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="sandbox projects: open the host-side worktree folder instead of "
+        "Remote-SSH (passthrough means the files are identical)",
+    )
     args = parser.parse_args(argv)
 
     code, candidate = _resolve_code_cli()
@@ -65,7 +98,18 @@ def main(argv: list[str] | None = None) -> int:
     if proj is None:
         return _fail(f"project {mapping.project!r} not in projects.toml")
 
-    if proj.is_container:
+    if proj.backend == config.BACKEND_SANDBOX and not args.local:
+        # Attach to the ACTUAL environment (its toolchain, venvs, processes)
+        # via Remote-SSH; the first attach after any recreate reinstalls the
+        # VS Code server inside the sandbox — slow once, cached after.
+        host = f"{proj.sandbox_name}.sbx"
+        if not _ssh_host_configured(host):
+            return _fail(
+                f"no managed SSH config for {host} — run: sbx setup ssh "
+                "(or use --local for the host-side folder)"
+            )
+        cmd = [code, "--remote", f"ssh-remote+{host}", proj.workdir_for(mapping.branch)]
+    elif proj.is_container:
         name = container.current_name(proj)
         if not name:
             return _fail(f"no running container for {mapping.project!r}")

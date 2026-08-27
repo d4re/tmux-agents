@@ -33,6 +33,7 @@ from tmux_agents import (
     phase,
     progress,
     provisioning,
+    sandbox,
     ssh_forward,
     startup,
     tmux,
@@ -762,8 +763,21 @@ def _activate_project(
         multi = progress.MultiReporter(list(reporters.values()))
 
         container_name: str | None = None
+        sandbox_created = False
         try:
-            if proj.is_container:
+            if proj.backend == config.BACKEND_SANDBOX:
+                with multi.stage("sandbox") as st:
+                    # Handles a sandbox that is GONE, not merely stopped —
+                    # `sbx exec` auto-start does not cover deletion.
+                    sandbox_created = sandbox.ensure_up(proj)
+                    if sandbox_created:
+                        st.info(
+                            "recreated (was deleted) — fresh VM: claude /login "
+                            "and codex login required; resume ids cleared"
+                        )
+                    else:
+                        st.skip("already present")
+            elif proj.is_container:
                 with multi.stage("container") as st:
                     existing = container.current_name(proj)
                     if existing:
@@ -789,9 +803,10 @@ def _activate_project(
                             container_name,
                             proj.user or "vscode",
                         ).render(st)
-        except container.ContainerError as ce:
+        except (container.ContainerError, sandbox.SandboxError) as ce:
+            kind = "sandbox" if proj.backend == config.BACKEND_SANDBOX else "container"
             for e in entries:
-                _fail(e, f"container start failed: {ce}")
+                _fail(e, f"{kind} start failed: {ce}")
             return  # finally block runs, cleaning up logs
 
         # Once per project group, after the container is up (for container
@@ -801,7 +816,9 @@ def _activate_project(
         # respawn for this project's entries.
         with multi.stage("codex hooks") as st:
             try:
-                if proj.is_container:
+                if proj.backend == config.BACKEND_SANDBOX:
+                    codex_hooks.ensure_sandbox(proj.sandbox_name)
+                elif proj.is_container:
                     codex_hooks.ensure_container(container_name, proj.user or "vscode")
                 else:
                     codex_hooks.ensure_host()
@@ -812,6 +829,24 @@ def _activate_project(
                     project_name,
                     exc_info=True,
                 )
+
+        def _slot_for_cmd(slot: windows.AgentSlot) -> windows.AgentSlot:
+            # A recreated sandbox lost its session files with the VM;
+            # passing the stale id would make `claude --resume` error out.
+            if sandbox_created and slot.session_id:
+                return dataclasses.replace(slot, session_id=None)
+            return slot
+
+        def _hold_codex_login(pane_full: str) -> None:
+            # A fresh sandbox has no codex login; launching codex into an
+            # auth error loop helps nobody — hold the pane on the runbook
+            # (the spec's errored-placeholder-with-hint for recreation).
+            startup.show_static_text(
+                pane_full, sandbox.CODEX_LOGIN_RUNBOOK.format(name=proj.sandbox_name)
+            )
+            startup._write_pane_state(
+                e.host_worktree, pane_full.lstrip("%"), phase_value=phase.ERRORED
+            )
 
         # Per-entry: hooks + respawn-pane.
         template_path = resources.files("tmux_agents.hooks") / "agents.json"
@@ -843,16 +878,40 @@ def _activate_project(
                 # Per-slot: a primary respawn failure never blocks (or is
                 # masked by) the secondary's, and vice versa — each is
                 # isolated exactly like today's per-entry failures.
+                if sandbox_created:
+                    # Persist the clearing, not just the respawn arguments:
+                    # a stale id left in the mapping (e.g. on a slot held
+                    # below) would be merged forward by the tick and
+                    # resurface as `--resume <stale>` on a later restore.
+                    windows.update_mapping(
+                        ph.new_window_id,
+                        lambda m: (
+                            dataclasses.replace(
+                                m,
+                                agents=[
+                                    dataclasses.replace(s, session_id=None)
+                                    for s in m.agents
+                                ],
+                            )
+                            if m is not None
+                            else None
+                        ),
+                    )
                 if ph.pane_id is not None:
                     try:
-                        cmd = _build_slot_cmd(proj, e, e.slots[0], container_name)
-                        startup._respawn_with_retry(ph.pane_id, cmd)
-                        logger.info(
-                            "%s: respawned pane=%s cmd_preview=%r",
-                            e.window_id,
-                            ph.pane_id,
-                            cmd[:80],
-                        )
+                        if sandbox_created and e.slots[0].kind == agent_kind.CODEX:
+                            _hold_codex_login(ph.pane_id)
+                        else:
+                            cmd = _build_slot_cmd(
+                                proj, e, _slot_for_cmd(e.slots[0]), container_name
+                            )
+                            startup._respawn_with_retry(ph.pane_id, cmd)
+                            logger.info(
+                                "%s: respawned pane=%s cmd_preview=%r",
+                                e.window_id,
+                                ph.pane_id,
+                                cmd[:80],
+                            )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
                         logger.error("%s: %s", e.window_id, msg)
@@ -860,14 +919,19 @@ def _activate_project(
                 if ph.secondary_pane_id is not None:
                     secondary = _secondary_slot_for_activation(e, ph.new_window_id)
                     try:
-                        cmd2 = _build_slot_cmd(proj, e, secondary, container_name)
-                        startup._respawn_with_retry(ph.secondary_pane_id, cmd2)
-                        logger.info(
-                            "%s: respawned secondary pane=%s cmd_preview=%r",
-                            e.window_id,
-                            ph.secondary_pane_id,
-                            cmd2[:80],
-                        )
+                        if sandbox_created and secondary.kind == agent_kind.CODEX:
+                            _hold_codex_login(ph.secondary_pane_id)
+                        else:
+                            cmd2 = _build_slot_cmd(
+                                proj, e, _slot_for_cmd(secondary), container_name
+                            )
+                            startup._respawn_with_retry(ph.secondary_pane_id, cmd2)
+                            logger.info(
+                                "%s: respawned secondary pane=%s cmd_preview=%r",
+                                e.window_id,
+                                ph.secondary_pane_id,
+                                cmd2[:80],
+                            )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
                         logger.error("%s: %s", e.window_id, msg)
@@ -895,6 +959,21 @@ def execute_plan(
     entries (the next state tick will mark it errored once it dies)."""
     by_entry_window = {ph.entry.window_id: ph for ph in placeholders.values()}
 
+    groups = group_entries_by_project(plan)
+    if any(
+        name in projects and projects[name].backend == config.BACKEND_SANDBOX
+        for name in groups
+    ):
+        try:
+            # Once, before the parallel wave — the daemon does not auto-start
+            # at boot, and N groups racing a start would just serialize on
+            # the daemon lock anyway.
+            sandbox.ensure_daemon()
+        except sandbox.SandboxError:
+            # Each sandbox group will fail individually with the actionable
+            # hint from its own ensure_up call.
+            logger.error("sbx daemon unavailable before restore wave", exc_info=True)
+
     def _fail(e: Entry, msg: str) -> None:
         """Whole-project/whole-entry failure (project missing, container
         bring-up failed): mark every placeholder pane this entry has, since
@@ -914,7 +993,7 @@ def execute_plan(
             ex.submit(
                 _activate_project, name, list(entries), projects, by_entry_window, _fail
             )
-            for name, entries in group_entries_by_project(plan).items()
+            for name, entries in groups.items()
         ]
         for f in futures:
             f.result()  # propagate unexpected exceptions for visibility

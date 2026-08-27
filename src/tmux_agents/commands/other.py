@@ -35,6 +35,7 @@ from tmux_agents import (
     locks,
     logging_setup,
     paths,
+    sandbox,
     startup,
     tmux,
 )
@@ -88,6 +89,20 @@ def _container_has_exe(container_name: str, user: str, exe: str) -> bool:
         return False
 
 
+def _sandbox_has_exe(name: str, exe: str) -> bool:
+    """`command -v` probe INSIDE the sandbox — a host probe would prove
+    nothing (and a host fallback would be a silent isolation hole). The
+    script always exits 0 and answers via stdout, so a nonzero exit can
+    only be a transport-level failure (sbx missing, timeout, login/daemon,
+    deleted sandbox) and propagates with its real remediation instead of
+    reading as a misleading 'not found'."""
+    out = sandbox.exec_capture(
+        name,
+        f"command -v {shlex.quote(exe)} >/dev/null 2>&1 && echo found || echo missing",
+    )
+    return out.strip() == "found"
+
+
 def _rollback(pane_id: str, worktree, pane_id_stripped: str) -> None:
     try:
         tmux.kill_pane(pane_id)
@@ -119,7 +134,9 @@ def _start(mapping: WindowMapping, proj: Project, window_id: str) -> int:
 
     if other_kind == agent_kind.CODEX:
         try:
-            if proj.is_container:
+            if proj.backend == config.BACKEND_SANDBOX:
+                codex_hooks.ensure_sandbox(proj.sandbox_name)
+            elif proj.is_container:
                 codex_hooks.ensure_container(container_name, user)
             else:
                 codex_hooks.ensure_host()
@@ -138,13 +155,16 @@ def _start(mapping: WindowMapping, proj: Project, window_id: str) -> int:
     )
     if not explicit:
         exe = agent_kind.executable(other_kind)
-        found = (
-            _container_has_exe(container_name, user, exe)
-            if proj.is_container
-            else shutil.which(exe) is not None
-        )
+        if proj.backend == config.BACKEND_SANDBOX:
+            found = _sandbox_has_exe(proj.sandbox_name, exe)
+            where = "sandbox"
+        elif proj.is_container:
+            found = _container_has_exe(container_name, user, exe)
+            where = "container"
+        else:
+            found = shutil.which(exe) is not None
+            where = "PATH"
         if not found:
-            where = "container" if proj.is_container else "PATH"
             return _notice(f"agent-other: `{exe}` not found on {where}")
 
     with locks.locked(paths.worktree_cleanup_lock(worktree)):
