@@ -684,6 +684,10 @@ def test_sandbox_project_probes_in_sandbox_not_host(
     assert ensured == ["svc"]
     assert calls.ensure_host == [] and calls.ensure_container == []
     assert probes and probes[0][0] == "svc" and "command -v codex" in probes[0][1]
+    # Must probe through a LOGIN shell, like the exec templates launch the
+    # agent: sbx puts binaries in ~/.local/bin, which plain `sh -c` lacks —
+    # a bare probe reported `missing` for a codex the pane launches fine.
+    assert probes[0][1].startswith("bash -lc ")
     assert len(calls.respawned) == 1
     assert calls.respawned[0][1].startswith("sbx exec")
 

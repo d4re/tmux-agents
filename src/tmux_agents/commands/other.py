@@ -91,15 +91,20 @@ def _container_has_exe(container_name: str, user: str, exe: str) -> bool:
 
 def _sandbox_has_exe(name: str, exe: str) -> bool:
     """`command -v` probe INSIDE the sandbox — a host probe would prove
-    nothing (and a host fallback would be a silent isolation hole). The
-    script always exits 0 and answers via stdout, so a nonzero exit can
-    only be a transport-level failure (sbx missing, timeout, login/daemon,
-    deleted sandbox) and propagates with its real remediation instead of
-    reading as a misleading 'not found'."""
-    out = sandbox.exec_capture(
-        name,
-        f"command -v {shlex.quote(exe)} >/dev/null 2>&1 && echo found || echo missing",
+    nothing (and a host fallback would be a silent isolation hole).
+
+    The probe runs through `bash -lc`, exactly like the sandbox exec
+    templates launch the agent: sbx-convention binaries live in
+    `~/.local/bin`, which only a LOGIN shell's profile puts on PATH — a
+    plain `sh -c` probe reports `missing` for a codex the pane would
+    launch just fine. The script always exits 0 and answers via stdout,
+    so a nonzero exit can only be a transport-level failure (sbx missing,
+    timeout, login/daemon, deleted sandbox) and propagates with its real
+    remediation instead of reading as a misleading 'not found'."""
+    probe = (
+        f"command -v {shlex.quote(exe)} >/dev/null 2>&1 && echo found || echo missing"
     )
+    out = sandbox.exec_capture(name, f"bash -lc {shlex.quote(probe)}")
     return out.strip() == "found"
 
 
