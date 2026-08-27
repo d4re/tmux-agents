@@ -114,6 +114,21 @@ def _interactive_prune(win: tmux.Window) -> int:
         worktree.remove(proj.repo, branch, force=False, **kw)
         print("worktree removed", flush=True)
         return 0
+    except worktree.NotAWorktreeError:
+        # Husk dir: exists on disk but git doesn't know it (no .git entry).
+        # Without this branch the kill wedged forever — git refuses the
+        # remove, and the window (plus its restore mapping) survived.
+        if pickers.prompt_yes_no(
+            "remove the leftover folder? > ",
+            default=True,
+            header=(
+                f".worktrees/{branch} is not a git worktree\n"
+                "(no .git — leftover files only; either way the agent is killed)"
+            ),
+        ):
+            worktree.remove_leftover(proj.repo, branch)
+            print("folder removed", flush=True)
+        return 0
     except worktree.DirtyWorktreeError:
         if not pickers.prompt_yes_no(
             f"{win.name}: worktree has uncommitted changes; force remove? > ",

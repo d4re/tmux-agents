@@ -53,6 +53,48 @@ def test_prompt_yes_no_default_false_orders_no_first(monkeypatch):
     assert captured["items"] == ["no", "yes"]
 
 
+def test_pick_one_passes_header_to_fzf(monkeypatch):
+    """`header` must reach fzf as --header so it stays pinned above the
+    choices for the whole decision (a print before fzf is wiped instantly)."""
+    import iterfzf
+
+    captured = {}
+
+    def fake_iterfzf(items, *, prompt, __extra__=(), **_):
+        captured["extra"] = tuple(__extra__)
+        return "a"
+
+    monkeypatch.setattr(iterfzf, "iterfzf", fake_iterfzf)
+    assert pickers.pick_one(["a"], prompt="p> ", header="line1\nline2") == "a"
+    assert "--header=line1\nline2" in captured["extra"]
+
+
+def test_pick_one_no_header_adds_no_flag(monkeypatch):
+    import iterfzf
+
+    captured = {}
+
+    def fake_iterfzf(items, *, prompt, __extra__=(), **_):
+        captured["extra"] = tuple(__extra__)
+        return "a"
+
+    monkeypatch.setattr(iterfzf, "iterfzf", fake_iterfzf)
+    pickers.pick_one(["a"], prompt="p> ")
+    assert not any(a.startswith("--header") for a in captured["extra"])
+
+
+def test_prompt_yes_no_passes_header_through(monkeypatch):
+    captured = {}
+
+    def fake_pick(items, *, prompt, header=None, **_):
+        captured["header"] = header
+        return "yes"
+
+    monkeypatch.setattr(pickers, "pick_one", fake_pick)
+    assert pickers.prompt_yes_no("p> ", default=True, header="info") is True
+    assert captured["header"] == "info"
+
+
 def test_prompt_yes_no_cancel_raises(monkeypatch):
     import iterfzf
 
