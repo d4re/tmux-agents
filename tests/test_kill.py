@@ -339,6 +339,81 @@ def test_kill_interactive_dirty_force_no_preserves_window(
     assert kill_env.killed == []
 
 
+def _husk_env(kill_env, monkeypatch, tmp_state_dir):
+    """Window @1 whose mapped worktree dir exists but git doesn't know it
+    (a husk: only leftover provisioned files, no .git)."""
+    wt = kill_env.repo / ".worktrees" / "feat-x"
+    _write_mapping("@1", "api", "feat-x", wt)
+    (wt / ".claude").mkdir()
+    _stub_state(tmp_state_dir, "@1", "I")
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+
+    def fake_remove(r, b, *, force=False):
+        raise worktree.NotAWorktreeError(f"fatal: '{wt}' is not a working tree")
+
+    monkeypatch.setattr(worktree, "remove", fake_remove)
+    return wt
+
+
+def test_kill_interactive_husk_remove_folder_then_kill(
+    kill_env, monkeypatch, tmp_state_dir
+):
+    """A husk worktree dir must not wedge the kill: report it, offer to
+    delete the leftover folder, then kill the window. The report must ride
+    the fzf --header (a print would be wiped the instant fzf draws), so it
+    stays visible until the decision is made."""
+    wt = _husk_env(kill_env, monkeypatch, tmp_state_dir)
+    answers = iter([True, True])  # prune? yes; remove leftover folder? yes
+    prompts = []
+
+    def fake_yn(prompt, *, default, header=None):
+        prompts.append((prompt, header))
+        return next(answers)
+
+    monkeypatch.setattr(pickers, "prompt_yes_no", fake_yn)
+    rc = kill.main([])
+    assert rc == 0
+    assert not wt.exists()
+    assert kill_env.killed == ["@1"]
+    assert any(
+        "leftover folder" in p and h is not None and "not a git worktree" in h
+        for p, h in prompts
+    )
+
+
+def test_kill_interactive_husk_keep_folder_still_kills(
+    kill_env, monkeypatch, tmp_state_dir
+):
+    wt = _husk_env(kill_env, monkeypatch, tmp_state_dir)
+    answers = iter([True, False])  # prune? yes; remove leftover folder? no
+    monkeypatch.setattr(
+        pickers, "prompt_yes_no", lambda prompt, *, default, **_: next(answers)
+    )
+    rc = kill.main([])
+    assert rc == 0
+    assert wt.exists()
+    assert kill_env.killed == ["@1"]
+
+
+def test_kill_interactive_husk_cancel_preserves_window(
+    kill_env, monkeypatch, tmp_state_dir
+):
+    wt = _husk_env(kill_env, monkeypatch, tmp_state_dir)
+    answers = iter([True])
+
+    def fake_yn(prompt, *, default, **_):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise pickers.Cancelled from None
+
+    monkeypatch.setattr(pickers, "prompt_yes_no", fake_yn)
+    rc = kill.main([])
+    assert rc == 0
+    assert wt.exists()
+    assert kill_env.killed == []
+
+
 def test_kill_interactive_cancel_at_picker_is_noop(
     kill_env, monkeypatch, tmp_state_dir
 ):

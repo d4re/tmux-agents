@@ -5,6 +5,7 @@ reach."""
 
 from __future__ import annotations
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,7 +22,14 @@ class DirtyWorktreeError(WorktreeError):
     """Worktree has uncommitted or untracked files; caller may retry with force."""
 
 
+class NotAWorktreeError(WorktreeError):
+    """The target dir exists but git doesn't know it as a worktree (no `.git`
+    entry — e.g. only tmux-agents' provisioned files survived an out-of-band
+    removal). Caller may offer `remove_leftover` instead of aborting."""
+
+
 _DIRTY_MARKER = "contains modified or untracked files"
+_NOT_A_WORKTREE_MARKER = "is not a working tree"
 
 # Substrings in `git fetch` stderr that indicate network unreachability —
 # the only failure mode where falling back to a cached `origin/<base>` is
@@ -389,7 +397,20 @@ def remove(
         stderr = r.stderr.strip()
         if _DIRTY_MARKER in stderr:
             raise DirtyWorktreeError(stderr)
+        if _NOT_A_WORKTREE_MARKER in stderr:
+            raise NotAWorktreeError(stderr)
         raise WorktreeError(stderr or "git worktree remove failed")
+
+
+def remove_leftover(repo: Path, branch: str) -> None:
+    """Delete a husk worktree dir git refused to remove (NotAWorktreeError).
+
+    Host-side rmtree: the devcontainer mount maps the same files, so this
+    works for container projects too (same rationale as `list_existing`)."""
+    target = repo / ".worktrees" / branch
+    if not target.exists():
+        return
+    shutil.rmtree(target)
 
 
 def list_existing(repo: Path) -> list[str]:

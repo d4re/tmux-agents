@@ -171,6 +171,37 @@ def test_remove_dirty_raises_dirty_error(tmp_path, monkeypatch):
         worktree.remove(tmp_path, "feat-x")
 
 
+def test_remove_unregistered_dir_raises_not_a_worktree_error(tmp_path, monkeypatch):
+    """A leftover .worktrees dir git doesn't know (no .git entry, e.g. only
+    tmux-agents' provisioned files survive) must raise the dedicated error so
+    callers can offer folder cleanup instead of aborting."""
+    wt = tmp_path / ".worktrees" / "feat-x"
+    wt.mkdir(parents=True)
+
+    def fake_run(cmd, capture_output=False, text=False, check=False, input=None):
+        return MagicMock(
+            returncode=128,
+            stdout="",
+            stderr=f"fatal: '{wt}' is not a working tree",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(worktree.NotAWorktreeError, match="is not a working tree"):
+        worktree.remove(tmp_path, "feat-x")
+
+
+def test_remove_leftover_deletes_dir(tmp_path):
+    wt = tmp_path / ".worktrees" / "feat-x"
+    (wt / ".claude").mkdir(parents=True)
+    (wt / ".claude" / "settings.local.json").write_text("{}")
+    worktree.remove_leftover(tmp_path, "feat-x")
+    assert not wt.exists()
+
+
+def test_remove_leftover_missing_dir_is_noop(tmp_path):
+    worktree.remove_leftover(tmp_path, "feat-x")
+
+
 def test_remove_generic_failure_raises_plain_worktree_error(tmp_path, monkeypatch):
     wt = tmp_path / ".worktrees" / "feat-x"
     wt.mkdir(parents=True)

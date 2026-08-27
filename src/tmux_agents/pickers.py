@@ -25,22 +25,27 @@ def pick_one(
     *,
     prompt: str,
     start_index: int | None = None,
+    header: str | None = None,
 ) -> str | None:
     """Fuzzy-pick one of `items`. Returns the chosen string, or None on Esc.
-    First item is pre-highlighted unless `start_index` (1-based) is given."""
+    First item is pre-highlighted unless `start_index` (1-based) is given.
+    `header` (may be multi-line) stays pinned above the choices for the whole
+    pick — anything print()ed before fzf is wiped when it draws."""
     from iterfzf import iterfzf
 
     extra: tuple[str, ...] = ("--layout=reverse-list",)
     if start_index is not None:
         extra += (f"--bind=load:pos({start_index})",)
+    if header is not None:
+        extra += (f"--header={header}",)
     return iterfzf(list(items), prompt=prompt, __extra__=extra)
 
 
-def prompt_yes_no(prompt: str, *, default: bool) -> bool:
+def prompt_yes_no(prompt: str, *, default: bool, header: str | None = None) -> bool:
     """Two-item fzf picker for yes/no. `default=True` pre-highlights 'yes';
     `default=False` pre-highlights 'no'. Raises `Cancelled` on Esc."""
     items = ["yes", "no"] if default else ["no", "yes"]
-    choice = pick_one(items, prompt=prompt)
+    choice = pick_one(items, prompt=prompt, header=header)
     if choice is None:
         raise Cancelled
     return choice == "yes"
