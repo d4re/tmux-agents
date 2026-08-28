@@ -204,6 +204,9 @@ def _provision(
                             )
                 except sandbox.SandboxError as se:
                     return _fatal(f"sandbox start failed: {se}")
+                if proj.share_gh_auth:
+                    with reporter.stage("gh auth") as st:
+                        gh_auth.maybe_sync_gh_auth_sandbox(proj.sandbox_name).render(st)
             elif proj.is_container:
                 try:
                     with reporter.stage("container") as st:

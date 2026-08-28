@@ -470,6 +470,12 @@ def _run_sandbox_worker(
                     proj.name,
                     exc_info=True,
                 )
+
+        # The recreate wiped the sandbox's gh login (deliberately not part
+        # of the state export — the host token is the source of truth).
+        if proj.share_gh_auth:
+            with multi.stage("gh auth") as st:
+                gh_auth.maybe_sync_gh_auth_sandbox(name).render(st)
     finally:
         _close_reporters(files, affected)
 

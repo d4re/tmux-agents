@@ -777,6 +777,9 @@ def _activate_project(
                         )
                     else:
                         st.skip("already present")
+                if proj.share_gh_auth:
+                    with multi.stage("gh auth") as st:
+                        gh_auth.maybe_sync_gh_auth_sandbox(proj.sandbox_name).render(st)
             elif proj.is_container:
                 with multi.stage("container") as st:
                     existing = container.current_name(proj)
