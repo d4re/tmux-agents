@@ -258,10 +258,14 @@ def import_state(name: str, blob: bytes) -> None:
 CODEX_LOGIN_RUNBOOK = """
   codex login required — this sandbox is fresh (no codex login yet).
 
-  In a shell for this sandbox (Ctrl-Space t):
-    sbx ports {name} --publish 1455:1455
-    codex login          # open the printed URL in the host browser
-    sbx ports {name} --unpublish 1455:1455
+  codex's login server binds to the VM's loopback, which sbx port
+  publishing can't reach — bridge it with an SSH tunnel instead
+  (prereq once per host: sbx setup ssh):
+
+    host terminal (keep running):  ssh -N -L 1455:127.0.0.1:1455 {name}.sbx
+    sandbox shell (Ctrl-Space t):  codex login
+                                   # open the printed URL in the host browser
+    after the browser flow:        ctrl-c the tunnel — done.
 
   Then re-run agent-restore (Ctrl-Space r) or restart this pane.
 """

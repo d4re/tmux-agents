@@ -198,11 +198,14 @@ Login transport, in preference order:
    disabled for this user's Enterprise workspace**, hence path 2 exists.
    Worth requesting from the workspace admin — it also removes the port
    machinery for every colleague.
-2. Standard `codex login` with the localhost callback bridged:
-   `sbx ports {name} --publish 1455:1455` (runtime, verified
-   host→sandbox), login in a pane, **unpublish after** — the fixed host
-   port collides if two sandboxes log in simultaneously, so treat it as a
-   scoped, temporary bridge. Works for every subscription tier.
+2. Standard `codex login` with the localhost callback bridged via SSH:
+   `ssh -N -L 1455:127.0.0.1:1455 {name}.sbx` (prereq: `sbx setup ssh`),
+   login in a pane, ctrl-c the tunnel after. `ssh -L` originates the
+   connection inside the VM, so it reaches codex's loopback-bound login
+   server — `sbx ports --publish` cannot (connection reset; the publish
+   path doesn't reach loopback-bound in-VM services). Works for every
+   subscription tier. The fixed host port collides if two sandboxes log
+   in simultaneously, so treat it as a scoped, temporary bridge.
 
 Consequences the implementation must own:
 
