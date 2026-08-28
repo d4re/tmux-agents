@@ -73,6 +73,11 @@ def _no_real_gh_sync(monkeypatch):
         "maybe_sync_gh_auth",
         lambda c, u="vscode": gh_auth.SyncResult("synced"),
     )
+    monkeypatch.setattr(
+        gh_auth,
+        "maybe_sync_gh_auth_sandbox",
+        lambda name: gh_auth.SyncResult("synced", where="sandbox"),
+    )
 
 
 @pytest.fixture(autouse=True)
