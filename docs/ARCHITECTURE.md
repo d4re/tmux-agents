@@ -369,9 +369,12 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    default).* `gh_auth.maybe_sync_gh_auth` (docker exec) /
    `maybe_sync_gh_auth_sandbox` (`sandbox.exec_capture`) reads the host's
    gh token (`gh auth token`, keyring-backed) and pipes it via stdin into
-   `gh auth login --with-token` in the target. Non-fatal: any missing
-   prerequisite (gh on host, host login, gh in the target) or sync failure
-   emits a stage warning and the agent starts without it. The same stage
+   `gh auth login --with-token` in the target. The sandbox variant first
+   probes for a runtime-injected `GH_TOKEN` (the sbx runtime provisions a
+   proxy-managed one, and `gh auth login` refuses to run while it's set)
+   and short-circuits to "already authenticated" when present. Non-fatal:
+   any missing prerequisite (gh on host, host login, gh in the target) or
+   sync failure emits a stage warning and the agent starts without it. The same stage
    runs in `agent-restore` and `agent-rebuild`, so a rebuilt container or
    recreated sandbox (which loses its `~/.config/gh/hosts.yml`) is
    re-authed automatically.
@@ -451,7 +454,7 @@ shell-outs to the dedicated module rather than inline.
 | `pickers.py` | fzf-backed primitives (`pick_one`, `prompt_yes_no`, `pick_or_create`, `prompt_free_text`) plus `NO_BRANCH_SENTINEL`. Used by `agent-new` / `agent-kill` / `agent-rebuild`. No tmux/project knowledge. |
 | `overview.py` | Row model (header / agent, with `slots: list[SlotState]` per agent row), `parse_state_code` (splits a `|`-joined `@state_code` into one `SlotState` per live slot), `format_line_plain` / `format_header`, the status-line summary renderer (`render_summary`, called from `state_tick`), fold persistence, and the curses TUI for the split-layout bottom pane: cursor model, per-slot state-colored rendering (letters joined by a dim `|`), click hit-testing, keyboard dispatch (↑↓ ↵ a/k/r/e/o, uppercase aliases), `attach_overview_pane` (`@role=overview`, idempotent), and content-fit auto-resize (`desired_pane_height` + `refit_self_pane`, publishing `@overview_rows` for the window-resized hook's `overview-refit` script). The TUI auto-tracks the active window unless the user moved the cursor. Repo headers count **live slots**, not windows (`format_header`'s `N agent(s)`). |
 | `ssh_forward.py` | Probes + pump spawn for SSH agent forwarding. Spawns the pump as `python -m tmux_agents._ssh_pump_script`; the pump delivers the relay into the container as plain files (no inlining). |
-| `gh_auth.py` | One-shot host→container/sandbox gh token sync (`maybe_sync_gh_auth` via docker exec, `maybe_sync_gh_auth_sandbox` via `sandbox.exec_capture`). Reads the host token via `gh auth token` (keyring-backed), pipes it via stdin into `gh auth login --with-token` in the target — never on argv or host disk. Always overwrites; every failure is a non-fatal `SyncResult` mapped onto a progress stage. Gated by the per-project `share_gh_auth` flag (default on). |
+| `gh_auth.py` | One-shot host→container/sandbox gh token sync (`maybe_sync_gh_auth` via docker exec, `maybe_sync_gh_auth_sandbox` via `sandbox.exec_capture`). Reads the host token via `gh auth token` (keyring-backed), pipes it via stdin into `gh auth login --with-token` in the target — never on argv or host disk. Always overwrites — except the sandbox variant, which short-circuits to `already_authenticated` when the sbx runtime injected its own `GH_TOKEN` (gh refuses `auth login` while it's set). Every failure is a non-fatal `SyncResult` mapped onto a progress stage. Gated by the per-project `share_gh_auth` flag (default on). |
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
 | `_ssh_pump_script.py` | Host-side pump. For each in-container SSH op, opens a fresh connection to the host's `$SSH_AUTH_SOCK` and splices it. |
 | `_ssh_relay_script.py` | In-container relay. Bind-or-exit dedup at `/tmp/tmux-agents-ssh.sock`, accepts client connections, splices each through stdin/stdout to the pump. |
