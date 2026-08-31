@@ -13,7 +13,11 @@ can't detect a revoked token, and re-login is cheap.
 
 The sandbox variant is the same ladder over `sandbox.exec_capture` (the
 sole sbx caller); the stdin guarantee holds there too. No user parameter:
-sbx exec always runs as the sandbox's default user.
+sbx exec always runs as the sandbox's default user. One extra rung at the
+top: the sbx runtime injects its own proxy-managed GH_TOKEN into every
+sandbox, and `gh auth login` hard-refuses to run while GH_TOKEN is set —
+so when the probe sees it, the sync short-circuits to
+"already_authenticated" instead of warning about a doomed login.
 """
 
 from __future__ import annotations
@@ -117,6 +121,7 @@ class SyncResult:
         "disabled_no_host_gh",
         "disabled_not_logged_in",
         "disabled_no_container_gh",
+        "already_authenticated",
         "synced",
         "failed",
     ]
@@ -133,6 +138,8 @@ class SyncResult:
             stage.warn("gh not logged in on host (auth sharing disabled)")
         elif self.outcome == "disabled_no_container_gh":
             stage.warn(f"gh missing in {self.where} (auth sharing disabled)")
+        elif self.outcome == "already_authenticated":
+            stage.info("gh already authenticated (runtime-injected token)")
         elif self.outcome == "synced":
             stage.info("token synced")
         elif self.outcome == "failed":
@@ -169,6 +176,21 @@ def has_gh_in_sandbox(name: str) -> bool:
     return True
 
 
+def sandbox_has_injected_gh_token(name: str) -> bool:
+    """True when the sbx runtime injected a GH_TOKEN into the sandbox env.
+
+    The runtime provisions a proxy-managed GH_TOKEN (PID1 scope, so every
+    exec sees it): gh is already authenticated, and `gh auth login` refuses
+    to run at all while GH_TOKEN is set — so a sync attempt can only fail.
+    A probe error means "unknown"; callers fall through to the normal sync
+    ladder, which degrades exactly as before."""
+    try:
+        sandbox.exec_capture(name, 'test -n "$GH_TOKEN"', timeout=_SBX_PROBE_TIMEOUT)
+    except sandbox.SandboxError:
+        return False
+    return True
+
+
 def _login_sandbox(name: str, token: str) -> bool:
     """Run `gh auth login --with-token` in the sandbox, token on stdin."""
     try:
@@ -186,10 +208,16 @@ def _login_sandbox(name: str, token: str) -> bool:
 
 def maybe_sync_gh_auth_sandbox(sandbox_name: str) -> SyncResult:
     """Idempotent gh-token sync for a sandbox — `maybe_sync_gh_auth` with
-    sbx exec as the transport. Every failure path is non-fatal: the agent
-    still spawns and gh asks for a manual login exactly as before."""
+    sbx exec as the transport, plus a runtime-token short-circuit (see the
+    module docstring). Every failure path is non-fatal: the agent still
+    spawns and gh asks for a manual login exactly as before."""
     if not sandbox_name:
         return SyncResult("disabled_no_container_gh", where="sandbox")
+    if sandbox_has_injected_gh_token(sandbox_name):
+        logger.info(
+            "sandbox %s has a runtime-injected GH_TOKEN; skipping sync", sandbox_name
+        )
+        return SyncResult("already_authenticated", where="sandbox")
     if not host_gh_installed():
         logger.warning("gh not installed on host; gh auth sharing disabled")
         return SyncResult("disabled_no_host_gh", where="sandbox")
