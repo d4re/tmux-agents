@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tmux_agents import container, paths, tmux, windows as windows_mod
+from tmux_agents import container, paths, sandbox, tmux, windows as windows_mod
 from tmux_agents.commands import vscode
 
 CODE_BIN = "/usr/local/bin/code"
@@ -202,6 +202,7 @@ def test_sandbox_project_uses_remote_ssh(monkeypatch, tmp_config_dir, tmp_path):
     worktree = _sandbox_setup(tmp_config_dir, tmp_path)
     called = _stub_subprocess(monkeypatch)
     monkeypatch.setattr(vscode, "_ssh_host_configured", lambda host: True)
+    monkeypatch.setattr(sandbox, "network_allowed", lambda name, host: True)
 
     rc = vscode.main(["--window-id", "@1"])
 
@@ -215,12 +216,63 @@ def test_sandbox_ssh_unconfigured_prints_fix(
     _sandbox_setup(tmp_config_dir, tmp_path)
     called = _stub_subprocess(monkeypatch)
     monkeypatch.setattr(vscode, "_ssh_host_configured", lambda host: False)
+    monkeypatch.setattr(
+        sandbox,
+        "network_allowed",
+        lambda *_: (_ for _ in ()).throw(AssertionError("ssh check comes first")),
+    )
 
     rc = vscode.main(["--window-id", "@1"])
 
     assert rc == 1
     assert called == []
     assert "sbx setup ssh" in capsys.readouterr().err
+
+
+def test_sandbox_blocked_vscode_egress_prints_allow_fix(
+    monkeypatch, tmp_config_dir, tmp_path, capsys
+):
+    """Remote-SSH scp's only the CLI; the CLI downloads the server from
+    inside the VM. Under deny-all that 403s and the window opens empty —
+    fail fast with the exact `sbx policy allow` instead."""
+    _sandbox_setup(tmp_config_dir, tmp_path)
+    called = _stub_subprocess(monkeypatch)
+    monkeypatch.setattr(vscode, "_ssh_host_configured", lambda host: True)
+    probed: list[tuple[str, str]] = []
+
+    def fake_allowed(name, host):
+        probed.append((name, host))
+        return host != "update.code.visualstudio.com"
+
+    monkeypatch.setattr(sandbox, "network_allowed", fake_allowed)
+
+    rc = vscode.main(["--window-id", "@1"])
+
+    assert rc == 1
+    assert called == []
+    assert [n for n, _ in probed] == ["svc"] * len(vscode.VSCODE_SERVER_HOSTS)
+    err = capsys.readouterr().err
+    assert "update.code.visualstudio.com" in err
+    assert (
+        'sbx policy allow network --sandbox svc "update.code.visualstudio.com"' in err
+    )
+    assert "--local" in err
+
+
+def test_sandbox_egress_probe_unknown_does_not_block(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """A probe that can't decide (sbx missing, daemon down, sandbox not yet
+    created) must not veto the attach — SSH itself will report the real error."""
+    worktree = _sandbox_setup(tmp_config_dir, tmp_path)
+    called = _stub_subprocess(monkeypatch)
+    monkeypatch.setattr(vscode, "_ssh_host_configured", lambda host: True)
+    monkeypatch.setattr(sandbox, "network_allowed", lambda name, host: None)
+
+    rc = vscode.main(["--window-id", "@1"])
+
+    assert rc == 0
+    assert called == [[CODE_BIN, "--remote", "ssh-remote+svc.sbx", str(worktree)]]
 
 
 def test_sandbox_local_flag_opens_host_folder(monkeypatch, tmp_config_dir, tmp_path):
@@ -232,6 +284,11 @@ def test_sandbox_local_flag_opens_host_folder(monkeypatch, tmp_config_dir, tmp_p
         vscode,
         "_ssh_host_configured",
         lambda host: (_ for _ in ()).throw(AssertionError("--local must skip SSH")),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "network_allowed",
+        lambda *_: (_ for _ in ()).throw(AssertionError("--local must skip egress")),
     )
 
     rc = vscode.main(["--window-id", "@1", "--local"])

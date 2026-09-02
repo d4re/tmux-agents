@@ -321,6 +321,22 @@ hostnames (`{name}.sbx`); `agent-vscode` runs
 - First attach installs the VS Code server inside the sandbox (slow once,
   cached after — but gone after rebuild/recreate, so expect the one-time
   cost again).
+- Egress: Remote-SSH (exec-server mode) scp's only its small CLI; the
+  CLI then downloads the VS Code server from
+  `update.code.visualstudio.com` / `vscode.download.prss.microsoft.com`
+  from *inside* the VM, with no client-side fallback for that step. Under
+  deny-all the window opens but the server never installs (empty
+  explorer). Those two hosts must be allowed — ideally in the project's
+  kit so recreates keep them; `agent-vscode` preflights with
+  `sbx policy check network` and prints the `sbx policy allow` line.
+  Extension installs need nothing extra (they fall back to a local
+  download + transfer).
+- Orphans: the sbx SSH session does not kill the remote install script
+  when the client disconnects. A reconnect within seconds can race the
+  orphan for the scp'd tarball, leaving the new attempt looping forever
+  on "Copying VS Code Server to host with scp". Kill stale
+  `~/.vscode-server/code-* command-shell` / `sh` trees in the VM and
+  reconnect once.
 
 ## One-time host setup (documented + preflight-checked, not automated)
 

@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 
-from tmux_agents import config, container, logging_setup, paths, tmux
+from tmux_agents import config, container, logging_setup, paths, sandbox, tmux
 from tmux_agents import windows as windows_mod
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,27 @@ def _ssh_host_configured(host: str) -> bool:
         if key == "hostname" and value.lower() != host.lower():
             return True
     return False
+
+
+# Remote-SSH in exec-server mode scp's only its small CLI to the sandbox;
+# the CLI then downloads the VS Code *server* from these hosts from inside
+# the VM, with no client-side fallback for that step. Under a deny-all
+# egress policy that 403s: the window opens but the server never installs
+# and the explorer stays empty — so preflight the policy and print the fix.
+VSCODE_SERVER_HOSTS = (
+    "update.code.visualstudio.com",
+    "vscode.download.prss.microsoft.com",
+)
+
+
+def _blocked_vscode_hosts(sandbox_name: str) -> list[str]:
+    """Hosts the sandbox's egress policy provably denies. An undecidable
+    probe (None) is not a veto — SSH itself surfaces the real error then."""
+    return [
+        h
+        for h in VSCODE_SERVER_HOSTS
+        if sandbox.network_allowed(sandbox_name, h) is False
+    ]
 
 
 def _attached_container_uri(container_name: str, workdir: str) -> str:
@@ -106,6 +127,15 @@ def main(argv: list[str] | None = None) -> int:
         if not _ssh_host_configured(host):
             return _fail(
                 f"no managed SSH config for {host} — run: sbx setup ssh "
+                "(or use --local for the host-side folder)"
+            )
+        blocked = _blocked_vscode_hosts(proj.sandbox_name)
+        if blocked:
+            hosts = ",".join(blocked)
+            return _fail(
+                f"sandbox egress policy blocks {hosts} — the VS Code server "
+                "can't install (window opens, no files). Run: sbx policy allow "
+                f'network --sandbox {proj.sandbox_name} "{hosts}" '
                 "(or use --local for the host-side folder)"
             )
         cmd = [code, "--remote", f"ssh-remote+{host}", proj.workdir_for(mapping.branch)]

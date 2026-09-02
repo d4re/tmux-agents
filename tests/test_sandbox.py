@@ -305,3 +305,36 @@ def test_recreate_absent_sandbox_just_creates(runs, tmp_state_dir, tmp_path):
     sandbox.recreate(_proj(tmp_path))
     verbs = [c["argv"][1] for c in runs.calls]
     assert verbs == ["ls", "create", "ls"]
+
+
+# ===== network_allowed (policy preflight) =====
+
+
+def test_network_allowed_true_from_json(runs):
+    runs.queue.append(_result(stdout='{"allowed": true, "target": "h:443"}'))
+    assert sandbox.network_allowed("acg", "update.code.visualstudio.com") is True
+    argv = runs.calls[0]["argv"]
+    assert argv[:5] == ["sbx", "policy", "check", "network", "--json"]
+    assert argv[-3:] == ["--sandbox", "acg", "update.code.visualstudio.com"]
+    assert runs.calls[0]["timeout"] == sandbox.PROBE_TIMEOUT
+
+
+def test_network_allowed_false_from_json_with_nonzero_rc(runs):
+    # `sbx policy check` exits 1 on a deny and still prints JSON.
+    runs.queue.append(
+        _result(rc=1, stdout='{"allowed": false, "deny_kind": "implicit"}')
+    )
+    assert sandbox.network_allowed("acg", "blocked.example") is False
+
+
+def test_network_allowed_unknown_on_non_json(runs):
+    # Unknown sandbox: rc 0 + 'ERROR: ... not found' on stderr, no JSON.
+    runs.queue.append(_result(rc=0, stdout="", stderr="ERROR: sandbox not found"))
+    assert sandbox.network_allowed("acg", "h") is None
+
+
+def test_network_allowed_unknown_when_sbx_missing_or_slow(runs):
+    runs.queue.append(FileNotFoundError())
+    assert sandbox.network_allowed("acg", "h") is None
+    runs.queue.append(subprocess.TimeoutExpired("sbx", 15))
+    assert sandbox.network_allowed("acg", "h") is None
