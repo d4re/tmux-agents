@@ -13,6 +13,7 @@ passes sbx's own stderr through."""
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import shlex
 import subprocess
@@ -116,6 +117,36 @@ def deliver(
         f'cat > "$t"{chmod} && mv "$t" {shlex.quote(str(p))}'
     )
     exec_capture(name, script, stdin=content)
+
+
+def network_allowed(name: str, host: str) -> bool | None:
+    """Would sandbox `name`'s egress policy let it reach `host` (port 443)?
+    Read-only `sbx policy check network --json`. True/False from the JSON
+    `allowed` field; None when the probe can't decide (sbx missing, timeout,
+    unknown sandbox — which exits 0 with an `ERROR:` line and no JSON), so
+    callers treat None as "don't veto". Note the deny case exits 1 *and*
+    prints JSON, so the return code is not the signal."""
+    try:
+        r = _run(
+            ["policy", "check", "network", "--json", "--sandbox", name, host],
+            timeout=PROBE_TIMEOUT,
+        )
+    except SandboxError as ex:
+        logger.debug("policy check %s for %r skipped: %s", host, name, ex)
+        return None
+    try:
+        data = json.loads(r.stdout or "")
+    except ValueError:
+        logger.debug(
+            "policy check %s for %r: no JSON (rc %s): %s",
+            host,
+            name,
+            r.returncode,
+            (r.stderr or "").strip(),
+        )
+        return None
+    allowed = data.get("allowed") if isinstance(data, dict) else None
+    return allowed if isinstance(allowed, bool) else None
 
 
 def daemon_running() -> bool:
