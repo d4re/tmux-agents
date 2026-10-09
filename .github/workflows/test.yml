@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       # keep in sync via the Makefile: `make lint` is the local equivalent
       - run: make lint
 
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v7
       # tmux enables the end-to-end smoke test (it self-skips when absent)
       - run: sudo apt-get update && sudo apt-get install -y tmux
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
       # keep in sync via the Makefile: `make test` is the local equivalent
