@@ -119,12 +119,13 @@ tmux-agent-status plays a sound when an agent finishes a turn. We already
 ## Agent-launch marker for Claude hooks (`write-state.sh`)
 
 The Codex hook script (codex-support spec) requires `TMUX_AGENTS_AGENT=1`
-in the environment so a manual `codex` run inside `agent-terminal`
-(`Ctrl-Space T`) — which deliberately propagates `TMUX_PANE` and sits in
-the worktree — can't write phases under the focused agent pane or
-overwrite its session pin. The same latent exposure exists for a manual
-`claude` run in that popup: worktree hooks key off `TMUX_PANE` alone.
-Extending the marker to `write-state.sh` closes it, but existing live
+in the environment so a manual `codex` run in a non-agent shell that has a
+`TMUX_PANE` and sits in the worktree stays inert. Claude's `write-state.sh`
+keys off `TMUX_PANE` alone. The original motivating case — a manual
+`claude` in the `agent-terminal` popup (`Ctrl-Space t`) — no longer reaches
+an agent pane: that shell now runs in its own hidden `_term-<n>` session
+pane with its own `TMUX_PANE`. What's left is defense in depth. Extending
+the marker to `write-state.sh` would provide it, but existing live
 panes were spawned without the variable and would go dark until
 respawned — needs a migration story (e.g. gate only when the variable
 is *present but not "1"*, then flip to hard-require a release later).

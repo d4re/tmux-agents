@@ -423,7 +423,7 @@ Cheat sheet:
 | `Ctrl-Space e`      | Rename current window's branch part              |
 | `Ctrl-Space L`      | Toggle layout: split (vertical) ↔ compact (horizontal) |
 | `Ctrl-Space v`      | Open the current agent's worktree in VS Code     |
-| `Ctrl-Space t`      | Open a shell in the current agent's worktree (popup) |
+| `Ctrl-Space t`      | Toggle a persistent shell in the current agent's worktree (popup; `t` again hides it and the shell keeps running, `Ctrl-D` exits it) |
 | `Ctrl-Space o`      | Start/switch to the window's other agent (Claude↔Codex); see "Running Codex alongside Claude" |
 | `Ctrl-Space <num>`  | Jump to window by number (shown in overview)     |
 | `Ctrl-Space w`      | Arrow-key window picker (`choose-tree`)          |
@@ -499,7 +499,9 @@ Mouse-drag inside a pane copies to the system clipboard on release.
 Cross-platform: tries `pbcopy` (macOS), `clip.exe` (WSL), `wl-copy`
 (Wayland), then `xclip`/`xsel` (X11) — see `~/.config/tmux-agents/clipboard-copy`.
 Keyboard: enter copy-mode with `Ctrl-Space [`, `v` starts a
-selection, `C-v` toggles rectangle, `y` copies and exits.
+selection, `C-v` toggles rectangle, `y` (or `Enter`) copies and exits.
+Double-click copies a word, triple-click a line. All of this also works in
+the `Ctrl-Space t` shell popup.
 
 To select text that spans two panes (tmux's copy-mode is pane-bound),
 hold **Option** while dragging (iTerm2, Ghostty, Alacritty) or **Fn**

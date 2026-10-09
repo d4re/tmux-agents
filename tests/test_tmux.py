@@ -285,3 +285,74 @@ def test_split_window_full_size_vertical_argv(monkeypatch):
     assert seen["args"][:2] == ["split-window", "-v"]
     assert "-f" in seen["args"]
     assert seen["args"][-1] == "c"
+
+
+# ----- hidden per-window `_term-<n>` session behind the `prefix t` popup -----
+@pytest.mark.parametrize("returncode,expected", [(0, True), (1, False)])
+def test_term_session_exists_matches_exact_name(monkeypatch, returncode, expected):
+    """`=` forces an exact match: a bare `_term-3` target would prefix-match
+    `_term-31` when `_term-3` is absent and attach the wrong agent's shell."""
+    calls = _stub_run(monkeypatch, returncode=returncode)
+    assert tmux.term_session_exists("@3") is expected
+    assert calls == [_PREFIX + ["has-session", "-t", "=_term-3"]]
+
+
+def test_create_term_session_runs_argv_in_cwd_and_hides_it(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, capture_output=False, text=False, check=False, input=None):
+        calls.append((cmd, input))
+        return MagicMock(stdout="", returncode=0, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    tmux.create_term_session("@3", argv=["/bin/zsh", "-il"], cwd="/wt")
+
+    assert calls[0] == (
+        _PREFIX
+        + ["new-session", "-d", "-s", "_term-3", "-c", "/wt", "/bin/zsh", "-il"],
+        None,
+    )
+    # status off: an attached client with a status line would run its own
+    # `#(agent-state)` tick. detach-on-destroy / destroy-unattached are pinned
+    # so a local.conf override can't strand the popup on another session or
+    # kill the shell when the popup is hidden. set-option's -t is a *pane*
+    # target, where an exact session match needs the trailing colon — a bare
+    # `=_term-3` fails with "no such session" (found on a real server).
+    assert calls[1] == (
+        _PREFIX + ["source-file", "-"],
+        "set-option -t =_term-3: status off\n"
+        "set-option -t =_term-3: detach-on-destroy on\n"
+        "set-option -t =_term-3: destroy-unattached off\n",
+    )
+
+
+def test_create_term_session_without_cwd_omits_c_flag(monkeypatch):
+    calls = _stub_run(monkeypatch)
+    tmux.create_term_session("@4", argv=["docker", "exec", "-it", "c", "bash"])
+    assert calls[0] == _PREFIX + [
+        "new-session",
+        "-d",
+        "-s",
+        "_term-4",
+        "docker",
+        "exec",
+        "-it",
+        "c",
+        "bash",
+    ]
+
+
+def test_term_attach_argv_targets_exact_session():
+    assert tmux.term_attach_argv("@3") == _PREFIX + [
+        "attach-session",
+        "-t",
+        "=_term-3",
+    ]
+
+
+def test_kill_term_session_tolerates_missing_session(monkeypatch):
+    """Most agents never opened a popup shell, so there is usually nothing
+    to kill — that must not fail agent-kill."""
+    calls = _stub_run(monkeypatch, returncode=1)
+    tmux.kill_term_session("@3")
+    assert calls == [_PREFIX + ["kill-session", "-t", "=_term-3"]]
