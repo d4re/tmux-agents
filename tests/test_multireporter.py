@@ -1,6 +1,8 @@
 import io
+
 import pytest
-from tmux_agents.progress import Reporter, MultiReporter
+
+from tmux_agents.progress import MultiReporter, Reporter
 
 
 def _make_pair():
@@ -40,9 +42,8 @@ def test_warn_aggregates_had_warning_across_members():
 
 def test_exception_propagates_once_with_fail_written_to_all():
     out_a, out_b, m = _make_pair()
-    with pytest.raises(RuntimeError, match="boom"):
-        with m.stage("container"):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"), m.stage("container"):
+        raise RuntimeError("boom")
     assert out_a.getvalue().count("✗ container") == 1
     assert out_b.getvalue().count("✗ container") == 1
 

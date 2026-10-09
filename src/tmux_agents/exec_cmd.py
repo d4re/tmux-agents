@@ -6,6 +6,7 @@ identical. Kept free of tmux/window knowledge — callers pass the pieces in.
 """
 
 from __future__ import annotations
+
 import logging
 
 from tmux_agents import agent_kind

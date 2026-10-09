@@ -1,5 +1,6 @@
 import pytest
-from tmux_agents import startup, tmux, paths
+
+from tmux_agents import paths, startup, tmux
 
 
 def _tmux_error(stderr):

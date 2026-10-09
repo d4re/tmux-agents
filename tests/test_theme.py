@@ -1,6 +1,6 @@
 import logging
 
-from tmux_agents import theme, state
+from tmux_agents import state, theme
 
 
 def test_dark_defaults_cover_all_states():

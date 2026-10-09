@@ -1,5 +1,7 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from tmux_agents import config
 
 
@@ -172,8 +174,10 @@ def test_default_exec_and_up_cmd(tmp_path, body, exec_cmd, up_cmd):
         ),
         # forward_ssh_agent=true with a custom exec_cmd: template is left alone.
         (
-            '[a]\nrepo = "/x"\ndevcontainer = true\nforward_ssh_agent = true\n'
-            'exec_cmd = "docker exec -it {container} zsh"\n',
+            (
+                '[a]\nrepo = "/x"\ndevcontainer = true\nforward_ssh_agent = true\n'
+                'exec_cmd = "docker exec -it {container} zsh"\n'
+            ),
             lambda p: (
                 p.exec_cmd == "docker exec -it {container} zsh"
                 and p.forward_ssh_agent is True
@@ -347,8 +351,10 @@ RESUME_ARGS_CASES = [
     ('[scripts]\nrepo = "/x/scripts"\n', "", "exec claude", "--resume"),
     # User-defined template using {resume_args}.
     (
-        '[scripts]\nrepo = "/x/scripts"\n'
-        'exec_cmd = "cd {workdir} && claude{resume_args}"\n',
+        (
+            '[scripts]\nrepo = "/x/scripts"\n'
+            'exec_cmd = "cd {workdir} && claude{resume_args}"\n'
+        ),
         " --resume Y",
         "claude --resume Y",
         None,

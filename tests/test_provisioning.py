@@ -1,6 +1,7 @@
 import json
 from importlib import resources
 from importlib.metadata import version as _pkg_version
+
 from tmux_agents import provisioning
 
 TEMPLATE = resources.files("tmux_agents.hooks") / "agents.json"

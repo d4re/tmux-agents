@@ -12,7 +12,6 @@ import subprocess
 from tmux_agents import overview, tmux
 from tmux_agents.overview import Row, TuiState
 
-
 # ---------- desired_pane_height ----------
 
 

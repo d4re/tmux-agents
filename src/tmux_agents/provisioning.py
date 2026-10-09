@@ -20,6 +20,7 @@ even without a version bump).
 """
 
 from __future__ import annotations
+
 import json
 from importlib import resources
 from importlib.metadata import version as _pkg_version

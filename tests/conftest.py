@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+
 import pytest
 
 from tmux_agents import tmux
@@ -127,7 +128,7 @@ def agent_new_env(monkeypatch, tmp_state_dir):
     Tests can override any single attr by calling monkeypatch.setattr after
     the fixture runs — the last assignment wins.
     """
-    from tmux_agents import tmux, container, ssh_forward
+    from tmux_agents import container, ssh_forward, tmux
     from tmux_agents.ssh_forward import PumpResult
 
     captured = SimpleNamespace(

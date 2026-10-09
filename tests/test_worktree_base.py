@@ -1,7 +1,7 @@
 """Tests for worktree._resolve_base — base-branch resolution."""
 
-from unittest.mock import MagicMock
 import subprocess
+from unittest.mock import MagicMock
 
 import pytest
 

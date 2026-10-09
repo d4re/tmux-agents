@@ -3,6 +3,7 @@
 for `exec_cmd`, `up_cmd`, and `container_workdir`."""
 
 from __future__ import annotations
+
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -179,7 +180,7 @@ def safe_load(path: Path, *, on_error=None) -> dict[str, Project]:
         return load(path)
     except FileNotFoundError:
         return {}
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001 — any malformed config degrades to {}
         if on_error is not None:
             on_error(f"projects.toml load failed: {type(ex).__name__}: {ex}")
         return {}

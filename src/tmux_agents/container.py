@@ -22,6 +22,7 @@ def is_running(name: str) -> bool:
         ["docker", "inspect", "-f", "{{.State.Running}}", name],
         capture_output=True,
         text=True,
+        check=False,
     )
     if r.returncode != 0:
         return False
@@ -41,6 +42,7 @@ def _resolve_by_label(label: str) -> str | None:
         ["docker", "ps", "--filter", f"label={label}", "--format", "{{.Names}}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if r.returncode != 0:
         return None
@@ -75,10 +77,10 @@ def rebuild(proj: Project, *, up_cmd: str | None, no_cache: bool = False) -> str
             )
         if existing:
             logger.info("removing existing container %s for %r", existing, proj.name)
-            subprocess.run(["docker", "rm", "-f", existing])
+            subprocess.run(["docker", "rm", "-f", existing], check=False)
         cmd = up_cmd
     logger.info("rebuilding container for %r; cmd=%s", proj.name, cmd)
-    r = subprocess.run(cmd, shell=True)
+    r = subprocess.run(cmd, shell=True, check=False)
     if r.returncode != 0:
         raise ContainerError(f"rebuild failed for {proj.name!r} (exit {r.returncode})")
     name = current_name(proj)
@@ -108,7 +110,7 @@ def ensure_up(proj: Project, *, up_cmd: str | None) -> str:
             f"no container for {proj.name!r} is running and no up_cmd configured"
         )
     logger.info("starting container for %r; cmd=%s", proj.name, up_cmd)
-    r = subprocess.run(up_cmd, shell=True)
+    r = subprocess.run(up_cmd, shell=True, check=False)
     if r.returncode != 0:
         raise ContainerError(f"up_cmd failed for {proj.name!r} (exit {r.returncode})")
     name = current_name(proj)

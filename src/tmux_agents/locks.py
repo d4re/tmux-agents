@@ -4,6 +4,7 @@ is only ever taken inside windows.update_mapping/delete_mapping, which
 never acquire anything else while holding it."""
 
 from __future__ import annotations
+
 import fcntl
 from contextlib import contextmanager
 from pathlib import Path

@@ -34,6 +34,7 @@ def has_python3_in_container(container: str, user: str = "vscode") -> bool:
         ["docker", "exec", "-u", user, container, "python3", "--version"],
         capture_output=True,
         text=True,
+        check=False,
     )
     return r.returncode == 0
 
@@ -66,6 +67,7 @@ def is_pump_responsive(
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         return True
     except subprocess.TimeoutExpired:
@@ -107,6 +109,7 @@ def wait_until_pump_ready(
                 capture_output=True,
                 text=True,
                 timeout=1.5,
+                check=False,
             )
             if r.returncode in (0, 1):
                 return True
@@ -125,6 +128,7 @@ def pump_pids_for(container: str) -> list[int]:
         ["pgrep", "-f", _PUMP_MODULE],
         capture_output=True,
         text=True,
+        check=False,
     )
     if r.returncode != 0:
         return []
@@ -138,6 +142,7 @@ def pump_pids_for(container: str) -> list[int]:
             ["ps", "-o", "args=", "-p", str(pid)],
             capture_output=True,
             text=True,
+            check=False,
         )
         # Pump argv: <python> -m tmux_agents._ssh_pump_script <container> <user>.
         # rsplit picks off the last 2 tokens regardless of interpreter path.

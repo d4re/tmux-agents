@@ -6,12 +6,14 @@ for the TUI loop. Layout / restore / new use `attach_overview_pane` to wire
 the pane into a window."""
 
 from __future__ import annotations
+
 import curses
 import logging
 import subprocess
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
+
 from tmux_agents import paths, phase, state, theme, tmux
 
 logger = logging.getLogger(__name__)
@@ -396,7 +398,7 @@ def _row_text(r: Row) -> str:
 
 def _decorate_cursor(text: str) -> str:
     """Mark the keyboard cursor row with a '> ' prefix in place of the indent."""
-    return "> " + (text[2:] if text.startswith("  ") else text)
+    return "> " + text.removeprefix("  ")
 
 
 def _color_pair(n: int) -> int:

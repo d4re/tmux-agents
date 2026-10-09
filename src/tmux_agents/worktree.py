@@ -4,6 +4,7 @@ the container instead of pointing at host paths the container can't
 reach."""
 
 from __future__ import annotations
+
 import logging
 import shutil
 import subprocess
@@ -91,7 +92,7 @@ def _git_run(
         ]
     else:
         cmd = ["git", "-C", str(repo), *args]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
 def _git_cmd(
@@ -275,11 +276,14 @@ def check_freshness(
             name = base_override
     else:
         name = head_name()
-        if name is None and run("remote", "get-url", "origin").returncode == 0:
-            # origin/HEAD unset (e.g. cloned before the default branch existed);
-            # populate it once, mirroring _resolve_base's fallback.
-            if run("remote", "set-head", "origin", "-a").returncode == 0:
-                name = head_name()
+        # origin/HEAD unset (e.g. cloned before the default branch existed);
+        # populate it once, mirroring _resolve_base's fallback.
+        if (
+            name is None
+            and run("remote", "get-url", "origin").returncode == 0
+            and run("remote", "set-head", "origin", "-a").returncode == 0
+        ):
+            name = head_name()
     if not name:
         reporter_stage.info("no origin base to compare")
         return
@@ -361,7 +365,7 @@ def resolve(
     cmd += ["-B", branch]
     if commit_ish is not None:
         cmd.append(commit_ish)
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         raise WorktreeError(
             r.stderr.strip() or r.stdout.strip() or "git worktree add failed"
@@ -392,7 +396,7 @@ def remove(
     )
     if force:
         cmd.append("--force")
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         stderr = r.stderr.strip()
         if _DIRTY_MARKER in stderr:

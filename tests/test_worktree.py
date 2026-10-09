@@ -1,8 +1,10 @@
 import io
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
-import subprocess
+
 import pytest
+
 from tmux_agents import worktree
 from tmux_agents.progress import Reporter
 

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from tmux_agents.commands import kill
 from tmux_agents import container, pickers, tmux, windows, worktree
+from tmux_agents.commands import kill
 
 
 @pytest.fixture(autouse=True)
@@ -556,7 +556,6 @@ def test_kill_interactive_missing_state_file_shows_question_mark(
 
     def fake_pick(items, *, prompt, **_):
         captured["items"] = list(items)
-        return None
 
     monkeypatch.setattr(pickers, "pick_one", fake_pick)
     monkeypatch.setattr(tmux, "kill_window", lambda t: None)

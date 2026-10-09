@@ -10,6 +10,7 @@ and orchestrates the restore handoff:
 Otherwise falls back to the legacy `tmux new-session -A` path."""
 
 from __future__ import annotations
+
 import logging
 import os
 import select
@@ -17,7 +18,7 @@ import shutil
 import subprocess
 import sys
 
-from tmux_agents import paths, tmux, logging_setup
+from tmux_agents import logging_setup, paths, tmux
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,7 @@ def _prompt_restore(count: int) -> bool:
         sys.stderr.write("\n[timed out: Y]\n")
         return True
     line = sys.stdin.readline().strip().lower()
-    if line in {"", "y", "yes"}:
-        return True
-    return False
+    return line in {"", "y", "yes"}
 
 
 def _move_snapshot_aside() -> None:

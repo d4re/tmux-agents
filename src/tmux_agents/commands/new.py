@@ -3,6 +3,7 @@ the spawn-time pipeline that ties together config, container, worktree,
 ssh_forward, tmux, provisioning, and windows."""
 
 from __future__ import annotations
+
 import argparse
 import dataclasses
 import logging
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import time
 from importlib import resources
+
 from tmux_agents import (
     codex_hooks,
     config,
@@ -48,6 +50,7 @@ def _is_valid_branch(name: str) -> bool:
             ["git", "check-ref-format", "--branch", name],
             capture_output=True,
             text=True,
+            check=False,
         ).returncode
         == 0
     )
@@ -347,9 +350,7 @@ def _provision(
         )
         return 0
     except Exception as e:
-        logger.error(
-            "%s: unexpected error in provisioning worker", window_id, exc_info=True
-        )
+        logger.exception("%s: unexpected error in provisioning worker", window_id)
         return _fatal(f"unexpected error: {type(e).__name__}: {e}")
 
 

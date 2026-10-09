@@ -9,24 +9,24 @@ by tests as `tmux_agents._ssh_relay_script`.
 # or from the sibling `_ssh_framing.py` on sys.path[0] when run as a delivered
 # file inside the container (where the `tmux_agents` package isn't installed).
 try:
-    from tmux_agents._ssh_framing import (  # noqa: F401
+    from tmux_agents._ssh_framing import (
+        EXIT_DUPLICATE,
         SENTINEL,
+        FrameError,
         encode_frame,
         encode_sentinel,
         read_frame,
-        FrameError,
         splice,
-        EXIT_DUPLICATE,
     )
 except ModuleNotFoundError:
     from _ssh_framing import (  # noqa: F401
+        EXIT_DUPLICATE,
         SENTINEL,
+        FrameError,
         encode_frame,
         encode_sentinel,
         read_frame,
-        FrameError,
         splice,
-        EXIT_DUPLICATE,
     )
 
 import errno

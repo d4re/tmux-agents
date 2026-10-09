@@ -2,7 +2,6 @@ import pytest
 
 from tmux_agents import phase, state
 
-
 # (phase, b_count, z_count, pane_alive, expected_letter, comment)
 # Priority chain: X > W > R > B > Z > I > S.
 CASES = [

@@ -2,9 +2,11 @@
 `git worktree remove` with interactive force-retry on dirty."""
 
 from __future__ import annotations
+
 import argparse
 import logging
 import sys
+
 from tmux_agents import (
     config,
     container,

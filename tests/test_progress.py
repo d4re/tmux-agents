@@ -1,7 +1,9 @@
 import io
+
 import pytest
-from tmux_agents.progress import Reporter
+
 from tmux_agents import state, theme
+from tmux_agents.progress import Reporter
 
 
 def _make(out: io.StringIO, *clock_ticks: float) -> Reporter:
@@ -77,9 +79,8 @@ def test_stage_warn_flips_flag_and_suppresses_check():
 def test_stage_exception_emits_cross_and_reraises():
     out = io.StringIO()
     r = _make(out, 0.0, 0.3)
-    with pytest.raises(RuntimeError, match="boom"):
-        with r.stage("container"):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"), r.stage("container"):
+        raise RuntimeError("boom")
     assert "✗ container — RuntimeError: boom" in out.getvalue()
 
 
@@ -94,18 +95,16 @@ def test_stage_warn_includes_timing():
 def test_stage_exception_includes_timing():
     out = io.StringIO()
     r = _make(out, 100.0, 101.2)
-    with pytest.raises(RuntimeError):
-        with r.stage("container"):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), r.stage("container"):
+        raise RuntimeError("boom")
     assert "✗ container — RuntimeError: boom (1.2s)" in out.getvalue()
 
 
 def test_keyboard_interrupt_treated_like_any_exception():
     out = io.StringIO()
     r = _make(out, 0.0, 0.3)
-    with pytest.raises(KeyboardInterrupt):
-        with r.stage("container"):
-            raise KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt), r.stage("container"):
+        raise KeyboardInterrupt()
     assert "✗ container — KeyboardInterrupt" in out.getvalue()
 
 
@@ -171,9 +170,8 @@ def test_color_emission_covers_all_four_symbols():
     with r.stage("hooks") as st:
         st.warn("denied")  # ! → W
 
-    with pytest.raises(RuntimeError):
-        with r.stage("c"):
-            raise RuntimeError()  # ✗ → X
+    with pytest.raises(RuntimeError), r.stage("c"):
+        raise RuntimeError()  # ✗ → X
 
     text = out.getvalue()
     assert pal.ansi_fg[state.STARTING] in text  # ▸ is grey

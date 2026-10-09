@@ -1,5 +1,7 @@
 from pathlib import Path
-from tmux_agents import windows, paths, tmux as tmux_mod
+
+from tmux_agents import paths, windows
+from tmux_agents import tmux as tmux_mod
 from tmux_agents.windows import AgentSlot, WindowMapping
 
 

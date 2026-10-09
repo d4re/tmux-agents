@@ -15,6 +15,7 @@ def run_hook(action, payload, cwd, env_extra=None, pane="12"):
         cwd=cwd,
         env=env,
         capture_output=True,
+        check=False,
     )
 
 

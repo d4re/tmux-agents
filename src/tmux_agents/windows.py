@@ -7,12 +7,14 @@ locate per-worktree state JSON files written by Claude hooks.
 """
 
 from __future__ import annotations
+
 import dataclasses
 import logging
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+
 from tmux_agents import locks, paths
 
 logger = logging.getLogger(__name__)
@@ -34,7 +36,7 @@ class AgentSlot:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "AgentSlot":
+    def from_dict(cls, d: dict) -> AgentSlot:
         return cls(
             kind=d["kind"],
             pane_id=d.get("pane_id"),
@@ -104,7 +106,7 @@ class WindowMapping:
         return d
 
     @classmethod
-    def from_dict(cls, window_id: str, d: dict) -> "WindowMapping":
+    def from_dict(cls, window_id: str, d: dict) -> WindowMapping:
         return cls(
             window_id=window_id,
             project=d["project"],
@@ -168,8 +170,8 @@ def forget(window_id: str) -> None:
 
 
 def update_mapping(
-    window_id: str, fn: Callable[["WindowMapping | None"], "WindowMapping | None"]
-) -> "WindowMapping | None":
+    window_id: str, fn: Callable[[WindowMapping | None], WindowMapping | None]
+) -> WindowMapping | None:
     """Serialized read-modify-write. fn gets the current mapping (or None)
     and returns the mapping to write, or None to abort untouched."""
     with locks.locked(paths.window_mapping_lock(window_id)):

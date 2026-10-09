@@ -8,16 +8,6 @@ via `docker exec` and runs with `python3 <dir>/_ssh_relay_script.py`. Nothing
 is inlined — the relay source is shipped verbatim from package data.
 """
 
-from tmux_agents._ssh_framing import (  # noqa: F401
-    SENTINEL,
-    encode_frame,
-    encode_sentinel,
-    read_frame,
-    FrameError,
-    splice,
-    EXIT_DUPLICATE,
-)
-
 import logging
 import logging.handlers
 import os
@@ -26,6 +16,16 @@ import subprocess
 import sys
 import time
 from importlib import resources
+
+from tmux_agents._ssh_framing import (  # noqa: F401
+    EXIT_DUPLICATE,
+    SENTINEL,
+    FrameError,
+    encode_frame,
+    encode_sentinel,
+    read_frame,
+    splice,
+)
 
 _LOGGER_NAME = "tmux_agents.ssh.pump"
 # Format + rotation are duplicated from logging_setup so the pump's lines match
@@ -134,6 +134,7 @@ def _container_running(container: str) -> bool:
         ["docker", "inspect", "-f", "{{.State.Running}}", container],
         capture_output=True,
         text=True,
+        check=False,
     )
     return r.returncode == 0 and r.stdout.strip() == "true"
 
