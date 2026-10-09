@@ -1,4 +1,8 @@
 import os
+import time
+
+import pytest
+
 from tmux_agents import registry, state
 
 
@@ -44,6 +48,27 @@ def test_cron_oneshot_uses_next_fire(tmp_path):
     _mark(d, "cron-oneshot__abc", "0 0 * * *", mtime=0.0)
     c = registry.scan(tmp_path, "23", now=100.0)
     assert c.sleeping == 1
+
+
+@pytest.fixture
+def new_york_tz(monkeypatch):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_cron_next_fire_is_real_epoch_off_utc(new_york_tz):
+    # croniter reads a naive datetime as UTC; feeding it local wall time
+    # shifted every expiry by the UTC offset (-4h here: markers expired on
+    # creation). 1_760_000_000 = 2025-10-09 04:53:20 EDT.
+    after = 1_760_000_000.0
+    fire = registry._next_cron_fire("*/5 * * * *", after)
+    assert after < fire <= after + 300
+    fire = registry._next_cron_fire("0 9 * * *", after)
+    assert time.localtime(fire)[3:5] == (9, 0)
+    assert after < fire <= after + 24 * 3600
 
 
 def test_cron_recur_lives_until_7d_backstop(tmp_path):

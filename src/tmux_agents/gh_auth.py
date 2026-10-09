@@ -56,6 +56,7 @@ def host_gh_token() -> str | None:
             capture_output=True,
             text=True,
             timeout=_PROBE_TIMEOUT,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -72,6 +73,7 @@ def has_gh_in_container(container: str, user: str = "vscode") -> bool:
             capture_output=True,
             text=True,
             timeout=_PROBE_TIMEOUT,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -100,6 +102,7 @@ def _login(container: str, user: str, token: str) -> bool:
             capture_output=True,
             text=True,
             timeout=_LOGIN_TIMEOUT,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as ex:
         logger.warning("gh auth sync for %s: %s", container, ex)

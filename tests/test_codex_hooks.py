@@ -1,11 +1,10 @@
 import json
 import subprocess
-
-import pytest
 from pathlib import Path
 
-from tmux_agents import codex_hooks, container
+import pytest
 
+from tmux_agents import codex_hooks, container
 
 SP = Path("/opt/tmux-agents/codex-hook.sh")
 

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 from tmux_agents import (
     tmux,
+)
+from tmux_agents import (
     windows as windows_mod,
 )
 from tmux_agents.commands import other as other_mod

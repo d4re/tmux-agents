@@ -320,9 +320,11 @@ def test_create_term_session_runs_argv_in_cwd_and_hides_it(monkeypatch):
     # `=_term-3` fails with "no such session" (found on a real server).
     assert calls[1] == (
         _PREFIX + ["source-file", "-"],
-        "set-option -t =_term-3: status off\n"
-        "set-option -t =_term-3: detach-on-destroy on\n"
-        "set-option -t =_term-3: destroy-unattached off\n",
+        (
+            "set-option -t =_term-3: status off\n"
+            "set-option -t =_term-3: detach-on-destroy on\n"
+            "set-option -t =_term-3: destroy-unattached off\n"
+        ),
     )
 
 

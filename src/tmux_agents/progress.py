@@ -5,10 +5,12 @@
 `MultiReporter` fans out to N reporters for the restore broadcast case."""
 
 from __future__ import annotations
+
 import os
 import sys
 import time
-from typing import Callable, TextIO
+from collections.abc import Callable
+from typing import Self, TextIO
 
 from tmux_agents import state, theme
 
@@ -31,7 +33,7 @@ def _format_elapsed(seconds: float) -> str:
     """Format elapsed time per spec: omit <1s, `(N.Ns)` 1-60s, `(Nm Ns)` ≥60s."""
     if seconds < 1.0:
         return ""
-    total_s = int(round(seconds))
+    total_s = round(seconds)
     if total_s < 60:
         return f"({seconds:.1f}s)"
     minutes, rem = divmod(total_s, 60)
@@ -42,7 +44,7 @@ class Stage:
     """Context manager returned by `Reporter.stage(name)`. Tracks elapsed
     time and which exit line (if any) to emit on `__exit__`."""
 
-    def __init__(self, reporter: "Reporter", name: str) -> None:
+    def __init__(self, reporter: Reporter, name: str) -> None:
         self._r = reporter
         self.name = name
         self._start: float = 0.0
@@ -66,7 +68,7 @@ class Stage:
         self._suppress_ok = True
         self._r._had_warning = True
 
-    def __enter__(self) -> "Stage":
+    def __enter__(self) -> Self:
         self._start = self._r._clock()
         return self
 
@@ -158,7 +160,7 @@ class MultiStage:
         for s in self._stages:
             s.warn(detail)
 
-    def __enter__(self) -> "MultiStage":
+    def __enter__(self) -> Self:
         for s in self._stages:
             s.__enter__()
         return self

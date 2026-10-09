@@ -2,6 +2,7 @@
 invocations here, not inline in callers."""
 
 from __future__ import annotations
+
 import os
 import subprocess
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ CONTROL_WINDOW = "ctrl"
 _TMUX = ["tmux", "-L", "agents"]
 
 
-def legacy_new_session_argv(conf: "Path") -> list[str]:
+def legacy_new_session_argv(conf: Path) -> list[str]:
     """`tmux -L agents -f <conf> new-session -A` — launcher's no-snapshot path."""
     return [
         *_TMUX,
@@ -66,7 +67,7 @@ class TmuxError(subprocess.CalledProcessError):
 
 
 def _run(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
-    proc = subprocess.run([*_TMUX, *args], capture_output=True, text=True)
+    proc = subprocess.run([*_TMUX, *args], capture_output=True, text=True, check=False)
     if check and proc.returncode != 0:
         raise TmuxError(
             proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
@@ -397,7 +398,7 @@ def respawn_pane(pane_id: str, *, command: str) -> None:
 
 def start_server_detached_with_session(
     *,
-    conf: "Path",
+    conf: Path,
     session: str,
     window_name: str,
 ) -> None:

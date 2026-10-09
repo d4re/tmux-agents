@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from tmux_agents import container as container_mod, paths, tmux, windows as windows_mod
+from tmux_agents import container as container_mod
+from tmux_agents import paths, tmux
+from tmux_agents import windows as windows_mod
 from tmux_agents.commands import terminal
 from tmux_agents.ssh_forward import UDS_PATH
 
@@ -282,7 +284,7 @@ def test_sandbox_project_runs_sbx_exec_not_host_shell(
     assert "-e" in argv and "TMUX_PANE" in argv
     assert "svc" in argv
     body = argv[-1]
-    assert body.startswith(f"cd '{worktree}'") or body.startswith(f"cd {worktree}")
+    assert body.startswith((f"cd '{worktree}'", f"cd {worktree}"))
     assert body.endswith("exec bash -il")
 
 

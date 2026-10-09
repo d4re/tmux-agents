@@ -236,7 +236,7 @@ def test_plan_falls_back_to_windows_dir_when_previous_missing(
 def test_pre_create_writes_window_mapping_with_session_id(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
 ):
-    from tmux_agents import tmux, overview
+    from tmux_agents import overview, tmux
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -290,7 +290,7 @@ def test_pre_create_fresh_scrubs_stale_files_for_assigned_pane(
     them for the id tmux is about to assign, before any state write or
     launch — otherwise a stale `session-99.id` would mispin a later codex
     resume onto the wrong session."""
-    from tmux_agents import tmux, overview
+    from tmux_agents import overview, tmux
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -338,8 +338,8 @@ def test_pre_create_revive_scrubs_stale_files_for_assigned_pane(
 ):
     """Same aliasing guard as the fresh case, for the revive path: the split
     lands on a pane id tmux may have recycled from an unrelated dead agent."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -387,7 +387,7 @@ def test_pre_create_revive_scrubs_stale_files_for_assigned_pane(
 def test_pre_create_writes_starting_phase_state(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
 ):
-    from tmux_agents import tmux, overview
+    from tmux_agents import overview, tmux
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -417,7 +417,7 @@ def test_pre_create_writes_starting_phase_state(
 def test_pre_create_window_name_includes_branch(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
 ):
-    from tmux_agents import tmux, overview
+    from tmux_agents import overview, tmux
     from tmux_agents.commands import restore
 
     wt = tmp_path / "api" / ".worktrees" / "feat"
@@ -453,7 +453,7 @@ def test_execute_calls_up_cmds_in_parallel_then_respawns(
 ):
     """Two projects, three entries: api has two branches, scripts has one.
     api's up_cmd runs once; respawn-pane fires for all three."""
-    from tmux_agents import tmux, container
+    from tmux_agents import container, tmux
     from tmux_agents.commands import restore
 
     # Build snapshot.
@@ -530,9 +530,9 @@ def test_execute_spawns_ssh_pump_for_container_projects(
     (once per project, like `agent-new` does) — otherwise restored panes
     inherit SSH_AUTH_SOCK pointing at an unpublished UDS and git-over-SSH
     fails until the user happens to run `agent-new` for the same project."""
-    from tmux_agents import tmux, container, ssh_forward
-    from tmux_agents.ssh_forward import PumpResult
+    from tmux_agents import container, ssh_forward, tmux
     from tmux_agents.commands import restore
+    from tmux_agents.ssh_forward import PumpResult
 
     wt_main = tmp_path / "api"
     wt_branch = tmp_path / "api" / ".worktrees" / "feat"
@@ -583,7 +583,7 @@ def test_execute_skips_ssh_pump_when_forward_ssh_agent_false(
     tmp_state_dir,
     tmp_path,
 ):
-    from tmux_agents import tmux, container, ssh_forward, config
+    from tmux_agents import config, container, ssh_forward, tmux
     from tmux_agents.commands import restore
 
     repo = tmp_path / "api"
@@ -628,10 +628,10 @@ def test_execute_syncs_gh_auth_once_per_container_project(
     tmp_path,
     projects_file,
 ):
-    from tmux_agents import tmux, container, ssh_forward, gh_auth
+    from tmux_agents import container, gh_auth, ssh_forward, tmux
+    from tmux_agents.commands import restore
     from tmux_agents.gh_auth import SyncResult
     from tmux_agents.ssh_forward import PumpResult
-    from tmux_agents.commands import restore
 
     wt_api = tmp_path / "api"
     _write_snapshot("@1", project="api", branch=None, host_worktree=wt_api)
@@ -688,9 +688,9 @@ def test_execute_skips_gh_auth_when_share_gh_auth_false(
     tmp_state_dir,
     tmp_path,
 ):
-    from tmux_agents import tmux, container, ssh_forward, gh_auth, config
-    from tmux_agents.ssh_forward import PumpResult
+    from tmux_agents import config, container, gh_auth, ssh_forward, tmux
     from tmux_agents.commands import restore
+    from tmux_agents.ssh_forward import PumpResult
 
     repo = tmp_path / "api"
     repo.mkdir()
@@ -736,7 +736,7 @@ def test_execute_failure_shows_error_in_pane_and_marks_state_errored(
     """When ensure_up fails, the placeholder pane is replaced with an error
     display and the per-pane state JSON is set to phase=errored (so the
     overview transitions S -> X)."""
-    from tmux_agents import tmux, container, overview
+    from tmux_agents import container, overview, tmux
     from tmux_agents.commands import restore
 
     wt = tmp_path / "api"
@@ -823,7 +823,7 @@ def test_pre_create_attaches_overview_pane_when_split_layout(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
 ):
     """When layout=split, the overview pane is attached to each restored window."""
-    from tmux_agents import tmux, overview, paths
+    from tmux_agents import overview, paths, tmux
     from tmux_agents.commands import restore
 
     # Force split layout
@@ -858,7 +858,7 @@ def test_pre_create_attaches_overview_pane_when_split_layout(
 def test_pre_create_skips_overview_pane_when_compact_layout(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, projects_file
 ):
-    from tmux_agents import tmux, overview, paths
+    from tmux_agents import overview, paths, tmux
     from tmux_agents.commands import restore
 
     paths.layout_file().parent.mkdir(parents=True, exist_ok=True)
@@ -933,8 +933,8 @@ def test_safe_load_projects_returns_empty_when_missing(tmp_config_dir, tmp_state
 
 def test_pre_create_windows_does_not_provision(monkeypatch, tmp_state_dir, tmp_path):
     """Provisioning moves out of pre_create_windows into execute_plan."""
-    from tmux_agents.commands import restore
     from tmux_agents import provisioning, tmux
+    from tmux_agents.commands import restore
 
     called = []
     monkeypatch.setattr(
@@ -983,8 +983,8 @@ def test_pre_create_revive_splits_surviving_pane_and_cleans_old_files(
 ):
     """Revive path: split the surviving overview pane above at 75%, rewrite
     the mapping with the new pane id, and unlink the old per-pane files."""
-    from tmux_agents.commands import restore
     from tmux_agents import paths, tmux
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1120,8 +1120,8 @@ def test_classify_reactivate_when_pane_alive_but_errored(tmp_path):
     """A failed restore leaves the placeholder pane alive but with
     phase=errored. A retry must reactivate it (re-run container + respawn
     Claude in place), not skip it as if it were a healthy agent."""
+    from tmux_agents import phase, startup
     from tmux_agents.commands import restore
-    from tmux_agents import startup, phase
 
     wt = tmp_path / "scripts"
     wt.mkdir()
@@ -1141,8 +1141,8 @@ def test_classify_reactivate_when_pane_alive_but_errored(tmp_path):
 
 def test_classify_skip_when_pane_alive_and_not_errored(tmp_path):
     """A live, non-errored pane is a healthy agent — still skip."""
+    from tmux_agents import phase, startup
     from tmux_agents.commands import restore
-    from tmux_agents import startup, phase
 
     wt = tmp_path / "scripts"
     wt.mkdir()
@@ -1186,8 +1186,8 @@ def test_pre_create_reactivate_reuses_existing_pane(
     new window is created, the existing pane is respawned into the tail-log
     placeholder, its state is reset to starting, and a Placeholder pointing at
     the same pane is returned so execute_plan can respawn Claude into it."""
+    from tmux_agents import phase, startup, tmux
     from tmux_agents.commands import restore
-    from tmux_agents import tmux, startup, phase
 
     wt = tmp_path / "scripts"
     wt.mkdir()
@@ -1236,8 +1236,8 @@ def test_retry_reactivates_errored_placeholder_from_windows_dir(
     a live-but-errored placeholder pane and windows.previous/ is gone. A
     second agent-restore must plan it as `reactivate` and respawn Claude into
     the SAME pane — the bug was it planned nothing (skip) and did nothing."""
+    from tmux_agents import phase, startup, tmux, windows
     from tmux_agents.commands import restore
-    from tmux_agents import tmux, startup, phase, windows
 
     wt = tmp_path / "scripts"  # host-only project (no container)
     windows.write_mapping(
@@ -1288,8 +1288,8 @@ def test_pre_create_revive_reaps_duplicate_overview_panes(
     toggle re-attached an overview to an already-agent-dead window). Revive
     keeps one overview pane, kills the extras, and splits a fresh agent pane
     above the survivor."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1340,8 +1340,8 @@ def test_pre_create_revive_anchors_on_live_secondary_when_overview_also_survives
     anchor on the SECONDARY (50/50 horizontal, before=True — same
     dual-agent geometry as the compact case), not split off the overview —
     and the overview pane must never be split or killed."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1414,8 +1414,8 @@ def test_pre_create_revive_bails_when_survivors_have_no_overview_pane(
 ):
     """More than one survivor but none tagged @role=overview — we can't tell
     where to put the agent, so revive bails without splitting or killing."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1461,8 +1461,8 @@ def test_pre_create_revive_skips_when_no_panes_survive(
 ):
     """All panes dead — _pre_create_revive returns None without calling
     tmux.split_window."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1514,7 +1514,7 @@ def test_pre_create_salvages_transient_fork_failure(
 ):
     """The #7 scenario: the placeholder respawn hits a transient fork
     failure once, then succeeds — the entry must be restored, not skipped."""
-    from tmux_agents import tmux, overview, provisioning, startup
+    from tmux_agents import overview, provisioning, startup, tmux
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -1579,8 +1579,8 @@ def test_harvest_session_ids_merges_disk_session_id_across_entries(tmp_path):
     disk holds B's latest session id (written after the snapshot, before the
     server died). The barrier must merge B's disk id into B's slot, keyed by
     B's own recorded pane id — not accidentally cross-wired with A."""
-    from tmux_agents.commands import restore
     from tmux_agents import paths
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir()
@@ -1639,8 +1639,8 @@ def test_harvest_session_ids_prefers_disk_over_stale_snapshot_value():
 def _dual_entry(
     wt: Path, *, default_pane="10", secondary_pane=None, secondary_kind="codex"
 ):
-    from tmux_agents.commands import restore
     from tmux_agents import windows
+    from tmux_agents.commands import restore
 
     return restore.Entry(
         window_id="@1",
@@ -1684,8 +1684,8 @@ def test_classify_secondary_none_when_alive_and_healthy(tmp_path):
 
 
 def test_classify_secondary_reactivate_when_alive_but_errored(tmp_path):
+    from tmux_agents import phase, startup
     from tmux_agents.commands import restore
-    from tmux_agents import startup, phase
 
     wt = tmp_path / "scripts"
     wt.mkdir()
@@ -1814,8 +1814,8 @@ def test_pre_create_revive_splits_off_live_secondary_in_compact_layout(
     Regression guard: the old code assumed a lone survivor was always the
     overview and would wrongly reshape the secondary with a 75%/vertical
     split."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1887,8 +1887,8 @@ def test_pre_create_revive_bails_when_lone_survivor_is_unmapped_pane(
     """Lone survivor that is neither an overview pane nor the mapped
     secondary — nothing usable to split from. Must bail (like the
     no-overview-among-multiple-survivors case) rather than guessing."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     wt.mkdir(exist_ok=True)
@@ -1931,7 +1931,7 @@ def test_pre_create_dual_fresh_emits_horizontal_split(
 ):
     """Two-slot fresh entry: after the primary placeholder is created, the
     secondary is split off it 50/50 horizontal (`agent-other`'s params)."""
-    from tmux_agents import tmux, overview, windows
+    from tmux_agents import overview, tmux, windows
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -1994,8 +1994,8 @@ def test_pre_create_secondary_split_loses_race_to_live_secondary(
     between planning and `_pre_create_secondary_split`'s locked region:
     the CAS must reject our publish, kill the placeholder we just split
     off, and leave slot 1 pointing at the winner's pane untouched."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     windows.write_mapping(
@@ -2052,8 +2052,8 @@ def test_pre_create_secondary_split_publishes_against_planned_revive_identity(
     `pane_id is not None` check — that used to make this the common case
     fail. Before the fix, this test fails: the placeholder gets killed and
     slot 1 is never restored."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     windows.write_mapping(
@@ -2098,8 +2098,8 @@ def test_pre_create_secondary_split_accepts_concurrent_dead_marking(
     pane exists), so the CAS must accept it as a compatible progression:
     publish our placeholder, and use the FRESH session id rather than the
     planned one."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     planned_session_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -2174,8 +2174,8 @@ def test_activate_uses_fresh_session_id_after_concurrent_dead_marking(
     respawn command built during activation must resume the FRESH session
     id (merged by the concurrent `_mark_secondary_dead`), not the stale one
     captured at planning time."""
+    from tmux_agents import provisioning, tmux, windows
     from tmux_agents.commands import restore
-    from tmux_agents import tmux, windows, provisioning
 
     wt = tmp_path / "scripts"
     planned_session_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -2255,8 +2255,8 @@ def test_pre_create_secondary_split_kills_placeholder_when_winner_changes_planne
     identity: if the fresh mapping's slot 1 shows a DIFFERENT live pane id
     by publish time (a winner raced us), the CAS must still reject and kill
     our placeholder, leaving the winner's pane untouched."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     windows.write_mapping(
@@ -2308,8 +2308,8 @@ def test_pre_create_secondary_split_accepts_cleared_last_pane_id(
     means no LIVE winner exists to overwrite, the CAS must still accept
     this as a compatible dead-state progression rather than rejecting and
     killing the placeholder."""
-    from tmux_agents.commands import restore
     from tmux_agents import tmux, windows
+    from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
     windows.write_mapping(
@@ -2366,8 +2366,8 @@ def test_pre_create_secondary_split_accepts_different_dead_lineage(
     the fresh slot's retained session id, not the planned one. Publication
     must also preserve the fresh slot's last_pane_id (25) so that dead
     pane's pending cleanup still happens."""
+    from tmux_agents import provisioning, tmux, windows
     from tmux_agents.commands import restore
-    from tmux_agents import tmux, windows, provisioning
 
     wt = tmp_path / "scripts"
     planned_session_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -2513,7 +2513,7 @@ def test_activate_builds_resume_command_for_codex_secondary(
     """Activation: per slot, exec_cmd.build(kind=slot.kind, session_id=
     slot.session_id) — a codex secondary must get ` resume <id>`, not
     claude's ` --resume <id>`."""
-    from tmux_agents import windows, tmux, provisioning
+    from tmux_agents import provisioning, tmux, windows
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -2569,7 +2569,7 @@ def test_execute_ensures_codex_hooks_once_per_project_group(
     once per activated project group: `ensure_host()` for the host-only
     project, `ensure_container(name, user)` for the container project,
     after its container is up."""
-    from tmux_agents import tmux, container
+    from tmux_agents import container, tmux
     from tmux_agents.commands import restore
 
     wt_api = tmp_path / "api"

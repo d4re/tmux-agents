@@ -5,9 +5,10 @@ execute_plan (creates windows, runs up_cmds, respawns panes).
 """
 
 from __future__ import annotations
+
 import argparse
+import contextlib
 import dataclasses
-import io
 import logging
 import os
 import shutil
@@ -231,7 +232,7 @@ def plan_entries(*, live_panes: dict[str, set[str]], projects: dict) -> list[Ent
     return entries
 
 
-def group_entries_by_project(plan: list[Entry]) -> "OrderedDict[str, list[Entry]]":
+def group_entries_by_project(plan: list[Entry]) -> OrderedDict[str, list[Entry]]:
     """Group by project, preserving plan order (first-occurrence wins)."""
     groups: OrderedDict[str, list[Entry]] = OrderedDict()
     for e in plan:
@@ -248,7 +249,7 @@ class Placeholder:
     secondary_pane_id: str | None = None  # tmux pane id (incl. %) for slot 1
 
 
-def _mark_pane_failed(e: "Entry", pane_id_full: str, reason: str) -> None:
+def _mark_pane_failed(e: Entry, pane_id_full: str, reason: str) -> None:
     """Show the failure in `pane_id_full` and flip its per-pane state to
     errored. The per-window spawn log is unlinked by `_activate_project`'s
     finally. Parameterized on a raw pane id (not a whole Placeholder) so a
@@ -291,9 +292,7 @@ def _slots_with_default(e: Entry, new_pane_stripped: str) -> list[windows.AgentS
     )
 
 
-def _pre_create_revive(
-    e: Entry, live_panes: dict[str, set[str]]
-) -> "Placeholder | None":
+def _pre_create_revive(e: Entry, live_panes: dict[str, set[str]]) -> Placeholder | None:
     """Split a new agent pane above the surviving overview pane.
 
     Normal case: exactly one pane survives (the overview) — split above it
@@ -378,8 +377,8 @@ def _pre_create_revive(
     _clean_old_pane_files(e.host_worktree, e.pane_id)
 
     def _revived_mapping(
-        m: "windows.WindowMapping | None",
-    ) -> "windows.WindowMapping":
+        m: windows.WindowMapping | None,
+    ) -> windows.WindowMapping:
         # update_mapping (not a bare write_mapping) so `fn` reads fresh at
         # write time — a secondary slot published (e.g. by agent-other)
         # between the snapshot `e` was built from and now survives the
@@ -407,7 +406,7 @@ def _pre_create_revive(
     return Placeholder(e, e.window_id, new_full_pane_id)
 
 
-def _pre_create_reactivate(e: Entry) -> "Placeholder | None":
+def _pre_create_reactivate(e: Entry) -> Placeholder | None:
     """Reuse the errored placeholder's existing window + pane in place.
 
     A failed restore left this pane alive showing an error message and its
@@ -423,7 +422,7 @@ def _pre_create_reactivate(e: Entry) -> "Placeholder | None":
     return Placeholder(e, e.window_id, full_pane_id)
 
 
-def _pre_create_fresh(e: Entry, layout: str) -> "Placeholder":
+def _pre_create_fresh(e: Entry, layout: str) -> Placeholder:
     """Existing single-window-creation path, extracted unchanged so the
     dual/secondary helpers below can layer on top of it uniformly with the
     revive/reactivate branches."""
@@ -469,7 +468,7 @@ def _pre_create_fresh(e: Entry, layout: str) -> "Placeholder":
 
 def _pre_create_primary(
     e: Entry, live_panes: dict[str, set[str]], layout: str
-) -> "Placeholder | None":
+) -> Placeholder | None:
     """Dispatch slot-0's window action. `skip` has no primary work — callers
     branch on that before reaching here (see `_pre_create_entry`)."""
     if e.kind == "revive":
@@ -510,8 +509,8 @@ def _secondary_slot_for_activation(e: Entry, window_id: str) -> windows.AgentSlo
 
 
 def _secondary_cas_compatible(
-    current: "tuple[str, str | None] | None",
-    planned: "tuple[str, str | None] | None",
+    current: tuple[str, str | None] | None,
+    planned: tuple[str, str | None] | None,
 ) -> bool:
     """True when the fresh slot-1 identity exactly matches what the split
     was planned against, OR represents a compatible DEAD-STATE PROGRESSION
@@ -538,7 +537,7 @@ def _secondary_cas_compatible(
     return current_kind == planned_kind and current_pane_id is None
 
 
-def _pre_create_secondary_split(e: Entry, window_id: str, anchor: str) -> "str | None":
+def _pre_create_secondary_split(e: Entry, window_id: str, anchor: str) -> str | None:
     """Split `anchor` 50/50 horizontal (Task 6's `agent-other` params) for
     the secondary placeholder. Split, scrub, AND publish all happen under
     the SAME worktree-cleanup-lock hold (mirrors `agent-other`'s
@@ -588,8 +587,8 @@ def _pre_create_secondary_split(e: Entry, window_id: str, anchor: str) -> "str |
         startup.scrub_pane_files(e.host_worktree, new_pane_stripped)
 
         def publish(
-            m: "windows.WindowMapping | None",
-        ) -> "windows.WindowMapping | None":
+            m: windows.WindowMapping | None,
+        ) -> windows.WindowMapping | None:
             if m is None:
                 return None
             agents = list(m.agents)
@@ -654,7 +653,7 @@ def _reactivate_secondary_in_place(e: Entry, window_id: str) -> str:
 
 def _pre_create_entry(
     e: Entry, live_panes: dict[str, set[str]], layout: str
-) -> "Placeholder | None":
+) -> Placeholder | None:
     """One entry's full pre-creation: the window action (slot 0) plus the
     independent secondary action, if any.
 
@@ -695,7 +694,7 @@ def pre_create_windows(
             if ph is not None:
                 placeholders[ph.new_window_id] = ph
         except Exception:
-            logger.error("%s: pre-create failed", e.window_id, exc_info=True)
+            logger.exception("%s: pre-create failed", e.window_id)
     return placeholders
 
 
@@ -718,7 +717,7 @@ def _activate_project(
     project_name: str,
     entries: list[Entry],
     projects: dict,
-    by_entry_window: "dict[str, Placeholder]",
+    by_entry_window: dict[str, Placeholder],
     _fail,
 ) -> None:
     """Bring up the project container (if any) and respawn each entry's pane.
@@ -726,7 +725,7 @@ def _activate_project(
     Opens one log file + Reporter per entry. Project-shared stages
     (container, ssh pump) are broadcast via MultiReporter; per-entry
     stages (hooks) go to that entry's log only. Logs are deleted after
-    each activation attempt (success or failure) in the finally block.
+    each activation attempt (success or failure) when the ExitStack unwinds.
     """
     logger.info("activating project %r with %d entries", project_name, len(entries))
     proj = projects.get(project_name)
@@ -734,22 +733,18 @@ def _activate_project(
         for e in entries:
             _fail(e, f"project {project_name!r} not in projects.toml")
         # Defensive: clean up any stray logs (shouldn't exist yet).
-        for e in entries:
-            try:
-                paths.spawn_log(e.window_id).unlink()
-            except FileNotFoundError:
-                pass
+        _remove_spawn_logs(entries)
         return
 
-    # Open per-entry log files + Reporters.
-    files: dict[str, io.TextIOWrapper] = {}
+    # Open per-entry log files + Reporters. On exit the stack closes the
+    # logs, then removes them (callbacks unwind LIFO).
     reporters: dict[str, progress.Reporter] = {}
-    try:
+    with contextlib.ExitStack() as logs:
+        logs.callback(_remove_spawn_logs, entries)
         for e in entries:
             log_path = paths.spawn_log(e.window_id)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            f = open(log_path, "w", buffering=1)
-            files[e.window_id] = f
+            f = logs.enter_context(open(log_path, "w", buffering=1))
             reporters[e.window_id] = progress.Reporter(
                 out=f, color=True, clock=time.monotonic
             )
@@ -917,7 +912,7 @@ def _activate_project(
                             )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
-                        logger.error("%s: %s", e.window_id, msg)
+                        logger.exception("%s: %s", e.window_id, msg)
                         _mark_pane_failed(e, ph.pane_id, msg)
                 if ph.secondary_pane_id is not None:
                     secondary = _secondary_slot_for_activation(e, ph.new_window_id)
@@ -937,20 +932,13 @@ def _activate_project(
                             )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
-                        logger.error("%s: %s", e.window_id, msg)
+                        logger.exception("%s: %s", e.window_id, msg)
                         _mark_pane_failed(e, ph.secondary_pane_id, msg)
-    finally:
-        for e in entries:
-            f = files.get(e.window_id)
-            if f is not None:
-                try:
-                    f.close()
-                except Exception:
-                    pass
-            try:
-                paths.spawn_log(e.window_id).unlink()
-            except FileNotFoundError:
-                pass
+
+
+def _remove_spawn_logs(entries: list[Entry]) -> None:
+    for e in entries:
+        paths.spawn_log(e.window_id).unlink(missing_ok=True)
 
 
 def execute_plan(
@@ -975,7 +963,7 @@ def execute_plan(
         except sandbox.SandboxError:
             # Each sandbox group will fail individually with the actionable
             # hint from its own ensure_up call.
-            logger.error("sbx daemon unavailable before restore wave", exc_info=True)
+            logger.exception("sbx daemon unavailable before restore wave")
 
     def _fail(e: Entry, msg: str) -> None:
         """Whole-project/whole-entry failure (project missing, container

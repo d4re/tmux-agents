@@ -7,13 +7,20 @@ hold, or error) is correct.  All tests use the _provision_env helper + the
 """
 
 import os
+from types import SimpleNamespace
 
-from tmux_agents import codex_hooks, container, provisioning, ssh_forward, worktree
-from tmux_agents import startup, phase
+from tmux_agents import (
+    codex_hooks,
+    container,
+    phase,
+    provisioning,
+    ssh_forward,
+    startup,
+    worktree,
+)
 from tmux_agents import windows as windows_mod
 from tmux_agents.commands import new
 from tmux_agents.ssh_forward import PumpResult
-from types import SimpleNamespace
 
 
 def _write_projects(tmp_config_dir, repo):
@@ -275,7 +282,7 @@ def test_fatal_container_error_returns_4(
     repo = tmp_path / "backend"
     repo.mkdir()
     _write_projects(tmp_config_dir, repo)
-    rc, log, cap = _run_provision(
+    rc, _log, cap = _run_provision(
         monkeypatch, tmp_config_dir, tmp_state_dir, repo, fail_container=True
     )
     assert rc == 4
@@ -359,7 +366,7 @@ def test_fatal_worktree_error_returns_4(
     repo.mkdir()
     _write_projects(tmp_config_dir, repo)
     monkeypatch.setattr(container, "current_name", lambda proj: "backend-c")
-    rc, log, cap = _run_provision(
+    rc, _log, cap = _run_provision(
         monkeypatch,
         tmp_config_dir,
         tmp_state_dir,
@@ -421,7 +428,7 @@ def test_gh_auth_stage_skipped_when_share_gh_auth_false(
     monkeypatch.setattr(
         gh_auth, "maybe_sync_gh_auth", lambda c, u: syncs.append((c, u))
     )
-    rc, log, cap = _run_provision(monkeypatch, tmp_config_dir, tmp_state_dir, repo)
+    rc, log, _cap = _run_provision(monkeypatch, tmp_config_dir, tmp_state_dir, repo)
     assert rc == 0
     assert "gh auth" not in log
     assert syncs == []
@@ -477,7 +484,7 @@ def test_hooks_warning_also_logged(
     _write_projects(tmp_config_dir, repo)
     monkeypatch.setattr(container, "current_name", lambda proj: "backend-c")
     with tmux_agents_caplog.at_level(logging.WARNING, logger="tmux_agents"):
-        rc, log, cap = _run_provision(
+        rc, log, _cap = _run_provision(
             monkeypatch,
             tmp_config_dir,
             tmp_state_dir,

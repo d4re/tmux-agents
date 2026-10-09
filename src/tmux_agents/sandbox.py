@@ -71,7 +71,7 @@ def _run(
     else:
         kwargs["input"] = stdin_data
     try:
-        return subprocess.run(["sbx", *argv], **kwargs)
+        return subprocess.run(["sbx", *argv], **kwargs, check=False)
     except FileNotFoundError as ex:
         raise SandboxError(INSTALL_HINT) from ex
     except subprocess.TimeoutExpired as ex:

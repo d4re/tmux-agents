@@ -103,6 +103,7 @@ def test_relay_imports_framing_as_sibling_without_package(tmp_path):
         [sys.executable, "-E", "-S", "-c", code],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert r.returncode == 0, r.stderr
     assert "/tmp/tmux-agents-ssh.sock" in r.stdout

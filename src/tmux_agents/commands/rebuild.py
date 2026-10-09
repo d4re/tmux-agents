@@ -13,14 +13,16 @@ Two halves, like `agent-new`:
 """
 
 from __future__ import annotations
+
 import argparse
+import contextlib
 import dataclasses
-import io
 import logging
 import os
 import shlex
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from tmux_agents import (
@@ -232,28 +234,26 @@ def _show_placeholders(live: list[tuple[Affected, windows_mod.AgentSlot]]) -> No
         )
 
 
-def _open_multi_reporter(
+@contextlib.contextmanager
+def _multi_reporter(
     affected: list[Affected], banner: str
-) -> tuple[dict[str, io.TextIOWrapper], progress.MultiReporter]:
-    files: dict[str, io.TextIOWrapper] = {}
-    reporters: list[progress.Reporter] = []
-    for a in affected:
-        log_path = paths.spawn_log(a.mapping.window_id)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        f = open(log_path, "w", buffering=1)
-        files[a.mapping.window_id] = f
-        r = progress.Reporter(out=f, color=True, clock=time.monotonic)
-        r.banner(banner)
-        reporters.append(r)
-    return files, progress.MultiReporter(reporters)
+) -> Iterator[progress.MultiReporter]:
+    """One spawn log + Reporter per affected window. On exit the logs are
+    closed, then removed (callbacks unwind LIFO)."""
+    with contextlib.ExitStack() as logs:
+        logs.callback(_remove_spawn_logs, affected)
+        reporters: list[progress.Reporter] = []
+        for a in affected:
+            log_path = paths.spawn_log(a.mapping.window_id)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            f = logs.enter_context(open(log_path, "w", buffering=1))
+            r = progress.Reporter(out=f, color=True, clock=time.monotonic)
+            r.banner(banner)
+            reporters.append(r)
+        yield progress.MultiReporter(reporters)
 
 
-def _close_reporters(files: dict[str, io.TextIOWrapper], affected: list[Affected]):
-    for f in files.values():
-        try:
-            f.close()
-        except Exception:
-            pass
+def _remove_spawn_logs(affected: list[Affected]) -> None:
     for a in affected:
         paths.spawn_log(a.mapping.window_id).unlink(missing_ok=True)
 
@@ -268,12 +268,7 @@ def _run_worker(
     live = _live_slots(affected)
     _show_placeholders(live)
 
-    files: dict[str, io.TextIOWrapper] = {}
-    try:
-        files, multi = _open_multi_reporter(
-            affected, f"Rebuilding container: {proj.name}"
-        )
-
+    with _multi_reporter(affected, f"Rebuilding container: {proj.name}") as multi:
         try:
             with multi.stage("rebuild") as st:
                 st.info("recreating container (this may take minutes)…")
@@ -318,8 +313,6 @@ def _run_worker(
                     proj.name,
                     exc_info=True,
                 )
-    finally:
-        _close_reporters(files, affected)
 
     # Container is up; re-exec every live slot's pane, isolating failures.
     failures = 0
@@ -339,9 +332,9 @@ def _run_worker(
                 m.host_worktree, slot.pane_id, phase_value=phase.STARTING
             )
             logger.info("%s: respawned pane=%%%s", m.window_id, slot.pane_id)
-        except Exception as ex:
+        except Exception:
             failures += 1
-            logger.error("%s: respawn failed: %s", m.window_id, ex, exc_info=True)
+            logger.exception("%s: respawn failed", m.window_id)
     logger.info(
         "rebuilt %r; respawned %d/%d agent slot(s)",
         proj.name,
@@ -376,10 +369,7 @@ def _run_sandbox_worker(
 
     name = proj.sandbox_name
     imported = False
-    files: dict[str, io.TextIOWrapper] = {}
-    try:
-        files, multi = _open_multi_reporter(affected, f"Rebuilding sandbox: {name}")
-
+    with _multi_reporter(affected, f"Rebuilding sandbox: {name}") as multi:
         # Daemon FIRST: with it down (its normal state after boot) the export
         # stage would fail with the daemon hint and the failure text would
         # then offer --discard-state — dangerous advice for a failure whose
@@ -476,8 +466,6 @@ def _run_sandbox_worker(
         if proj.share_gh_auth:
             with multi.stage("gh auth") as st:
                 gh_auth.maybe_sync_gh_auth_sandbox(name).render(st)
-    finally:
-        _close_reporters(files, affected)
 
     if not imported:
         # Persist the session-id clearing into the mappings, not just the
@@ -530,9 +518,9 @@ def _run_sandbox_worker(
                 m.host_worktree, slot.pane_id, phase_value=phase.STARTING
             )
             logger.info("%s: respawned pane=%%%s", m.window_id, slot.pane_id)
-        except Exception as ex:
+        except Exception:
             failures += 1
-            logger.error("%s: respawn failed: %s", m.window_id, ex, exc_info=True)
+            logger.exception("%s: respawn failed", m.window_id)
     logger.info(
         "rebuilt sandbox %r; respawned %d/%d agent slot(s), state %s",
         proj.name,

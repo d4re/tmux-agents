@@ -1,5 +1,5 @@
-from tmux_agents.commands import rename
 from tmux_agents import tmux
+from tmux_agents.commands import rename
 
 
 def _stub_windows(monkeypatch, wins, *, pinned: set[str] | None = None):

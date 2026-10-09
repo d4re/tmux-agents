@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from croniter import croniter
@@ -144,8 +144,12 @@ def _next_cron_fire(cron_expr: str, after: float) -> float | None:
     Returns None on an unparseable expression."""
     if not cron_expr:
         return None
+    # Aware local time: croniter reads a naive datetime as UTC, which shifted
+    # every result by the UTC offset. astimezone() pins the offset in effect
+    # at `after`, so a fire across a DST switch may still be off by an hour.
+    start = datetime.fromtimestamp(after, tz=UTC).astimezone()
     try:
-        return croniter(cron_expr, datetime.fromtimestamp(after)).get_next(float)
+        return croniter(cron_expr, start).get_next(float)
     except (ValueError, KeyError, AttributeError):
         logger.debug("registry: unparseable cron %r", cron_expr)
         return None

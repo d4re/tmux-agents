@@ -10,24 +10,26 @@ the last tick — most ticks are no-ops on that path.
 """
 
 from __future__ import annotations
+
 import argparse
 import dataclasses
 import logging
 import subprocess
 import time
 from pathlib import Path
+
 from tmux_agents import (
-    tmux,
+    locks,
+    logging_setup,
+    overview,
     paths,
     phase,
-    windows,
+    registry,
+    startup,
     state,
     theme,
-    overview,
-    registry,
-    logging_setup,
-    locks,
-    startup,
+    tmux,
+    windows,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,7 @@ def _read_session_id(worktree: Path, pane_id: str) -> str | None:
     return sid
 
 
-def _mark_secondary_dead(mapping: "windows.WindowMapping", slot) -> None:
+def _mark_secondary_dead(mapping: windows.WindowMapping, slot) -> None:
     """One guarded compare-and-set transaction: only mutate the slot if it
     still holds the observed (kind, pane_id) — guards against a revival that
     respawned the pane between the tick's read and this call. Cleanup lock
@@ -92,8 +94,8 @@ def _mark_secondary_dead(mapping: "windows.WindowMapping", slot) -> None:
 
 
 def _read_agent_mappings(
-    wins: list["tmux.Window"],
-) -> dict[str, "windows.WindowMapping"]:
+    wins: list[tmux.Window],
+) -> dict[str, windows.WindowMapping]:
     """Read every non-control window's mapping once. Shared by the tick's
     single upfront read (in `main`) and `_sweep_cleanup_pointers`'s fresh
     re-read under the cleanup lock."""
@@ -108,7 +110,7 @@ def _read_agent_mappings(
 
 
 def _worktree_live_pane_index(
-    mappings: dict[str, "windows.WindowMapping"],
+    mappings: dict[str, windows.WindowMapping],
 ) -> dict[Path, set[str]]:
     """{host_worktree: {pane ids claimed by any slot of any window's
     mapping}} — the cross-window alias index, since re-running agent-new on
@@ -122,7 +124,7 @@ def _worktree_live_pane_index(
     return idx
 
 
-def _sweep_cleanup_pointers(window_id: str, mapping: "windows.WindowMapping") -> None:
+def _sweep_cleanup_pointers(window_id: str, mapping: windows.WindowMapping) -> None:
     """Retry pending per-pane deletions for every slot carrying a
     `last_pane_id` (live or dead).
 
@@ -212,7 +214,7 @@ def _sweep_cleanup_pointers(window_id: str, mapping: "windows.WindowMapping") ->
             windows.update_mapping(window_id, clear)
 
 
-def _mapping_needs_merge(mapping: "windows.WindowMapping", win: "tmux.Window") -> bool:
+def _mapping_needs_merge(mapping: windows.WindowMapping, win: tmux.Window) -> bool:
     """Cheap pre-check mirroring `merge_ids`'s change test, using the mapping
     snapshot the tick already has in hand — avoids taking the mapping lock
     (and its fresh re-read) on the common tick where nothing changed."""
@@ -286,7 +288,7 @@ def _prune_windows_and_worktree_files(live_ids: set[str], now: float) -> None:
     if not d.exists():
         return
 
-    candidates: dict[Path, list[tuple[str, "windows.WindowMapping"]]] = {}
+    candidates: dict[Path, list[tuple[str, windows.WindowMapping]]] = {}
     for f in d.glob("*.json"):
         window_id = f.stem
         if window_id in live_ids:

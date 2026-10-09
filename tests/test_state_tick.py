@@ -3,8 +3,9 @@ import json
 import os
 import time
 from pathlib import Path
+
+from tmux_agents import overview, paths, state, tmux, windows
 from tmux_agents.commands import state_tick
-from tmux_agents import tmux, state, paths, windows, overview
 
 
 def _mapping(wid: str, wt: Path, pane: str = "23"):

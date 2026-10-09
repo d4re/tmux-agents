@@ -10,6 +10,7 @@ empty titles."""
 
 import argparse
 import logging
+
 from tmux_agents import logging_setup, tmux
 
 logger = logging.getLogger(__name__)

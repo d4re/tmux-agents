@@ -6,9 +6,11 @@ agent-new and agent-kill consume.
 """
 
 from __future__ import annotations
+
 import logging
 import subprocess
 from collections.abc import Callable, Iterable
+
 from tmux_agents import logging_setup
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ def pick_or_create(
             input=("\n".join(candidates) + "\n") if candidates else "",
             capture_output=True,
             text=True,
+            check=False,
         )
         if r.returncode not in (0, 1):
             raise Cancelled

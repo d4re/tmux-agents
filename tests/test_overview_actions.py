@@ -3,7 +3,6 @@ import pytest
 from tmux_agents import overview
 from tmux_agents.overview import Cursor
 
-
 _POPUP_PREFIX = ["tmux", "-L", "agents", "display-popup", "-E"]
 
 # (action, expected_argv) — action is a thunk that calls overview.*

@@ -1,6 +1,7 @@
 import pytest
+
+from tmux_agents import paths, tmux
 from tmux_agents.commands import layout
-from tmux_agents import tmux, paths
 
 
 def test_layout_split_to_compact_kills_overview_panes_by_role(

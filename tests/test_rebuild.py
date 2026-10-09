@@ -5,6 +5,7 @@ import pytest
 
 from tmux_agents import (
     codex_hooks,
+    container,
     gh_auth,
     paths,
     phase,
@@ -12,7 +13,6 @@ from tmux_agents import (
     ssh_forward,
     startup,
     tmux,
-    container,
 )
 from tmux_agents import windows as windows_mod
 from tmux_agents.commands import rebuild

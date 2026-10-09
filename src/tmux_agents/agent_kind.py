@@ -2,6 +2,7 @@
 name and resume-argument spelling. Nothing else may hardcode 'claude'."""
 
 from __future__ import annotations
+
 import shlex
 
 CLAUDE = "claude"

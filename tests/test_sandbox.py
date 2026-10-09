@@ -151,7 +151,7 @@ def test_ensure_daemon_starts_and_polls(runs, tmp_state_dir, monkeypatch):
 
 def test_ensure_daemon_raises_when_never_ready(runs, tmp_state_dir, monkeypatch):
     monkeypatch.setattr(sandbox.time, "sleep", lambda s: None)
-    clock = iter(range(0, 10_000))
+    clock = iter(range(10_000))
     monkeypatch.setattr(sandbox.time, "monotonic", lambda: next(clock))
     runs.queue.append(_result(rc=1, stderr="daemon not running"))
     runs.queue.append(_result(rc=0))  # start succeeds…
@@ -173,7 +173,7 @@ def test_is_present_parses_ls_quiet(runs):
 def _proj(tmp_path, **kw):
     from tmux_agents.config import Project
 
-    defaults = dict(name="acg", repo=tmp_path, exec_cmd="x", sandbox=True)
+    defaults = {"name": "acg", "repo": tmp_path, "exec_cmd": "x", "sandbox": True}
     defaults.update(kw)
     return Project(**defaults)
 

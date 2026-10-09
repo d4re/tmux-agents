@@ -6,6 +6,7 @@ and immune to matching user wrappers/backups. ensure_* validates content
 (script digest + canonical owned structure), not presence."""
 
 from __future__ import annotations
+
 import json
 import os
 import re

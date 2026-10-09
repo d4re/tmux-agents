@@ -2,7 +2,9 @@
 mode and rebuilds existing agent windows accordingly."""
 
 from __future__ import annotations
+
 import argparse
+
 from tmux_agents import overview, paths, tmux
 
 

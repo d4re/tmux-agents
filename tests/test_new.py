@@ -1,18 +1,19 @@
 import shlex
 from contextlib import contextmanager
 from types import SimpleNamespace
-from tmux_agents.commands import new
+
 from tmux_agents import (
-    tmux,
-    container,
-    pickers,
-    worktree,
-    ssh_forward,
-    phase,
     codex_hooks,
+    container,
     paths,
+    phase,
+    pickers,
+    ssh_forward,
+    tmux,
+    worktree,
 )
 from tmux_agents import windows as windows_mod
+from tmux_agents.commands import new
 
 
 def test_spawn_worker_uses_tmux_server_not_popen(monkeypatch):
@@ -83,13 +84,14 @@ def _provision_env(
     tests drive _provision directly via new.main(["--provision", ...]) without
     actually forking or closing file descriptors."""
     import os as _os
+
     from tmux_agents import (
+        codex_hooks,
         container,
-        worktree,
         provisioning,
         ssh_forward,
         startup,
-        codex_hooks,
+        worktree,
     )
     from tmux_agents import windows as windows_mod
 
@@ -293,9 +295,12 @@ def test_new_container_with_branch_creates_worktree(
 def test_new_host_only_skips_container_up(monkeypatch, tmp_config_dir, tmp_path):
     """Host-only project: no container.ensure_up; respawn cmd is `cd … && claude`."""
     import os as _os
-    from tmux_agents import container as container_mod, worktree as wt_mod
-    from tmux_agents import provisioning as prov_mod, startup as startup_mod
+
+    from tmux_agents import container as container_mod
+    from tmux_agents import provisioning as prov_mod
+    from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
     cap = SimpleNamespace(respawns=[], ensured=[])
@@ -456,9 +461,12 @@ def test_new_devcontainer_resolved_name_flows_to_exec_cmd(
 ):
     """Devcontainer: ensure_up returns a dynamic name that flows into exec_cmd."""
     import os as _os
-    from tmux_agents import container as container_mod, worktree as wt_mod
-    from tmux_agents import provisioning as prov_mod, startup as startup_mod
+
+    from tmux_agents import container as container_mod
+    from tmux_agents import provisioning as prov_mod
+    from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     repo = tmp_path / "webapp-gateway-service"
     repo.mkdir()
@@ -516,6 +524,7 @@ def test_new_creates_session_if_missing(
     _write_config(tmp_config_dir, tmp_path)
     import subprocess
     from types import SimpleNamespace
+
     from tmux_agents.ssh_forward import PumpResult
 
     called = []
@@ -562,11 +571,12 @@ def test_new_writes_window_mapping(agent_new_env, tmp_config_dir, tmp_path):
 
 def test_new_provisions_settings_local_json(monkeypatch, tmp_config_dir, tmp_path):
     """_provision writes .claude/settings.local.json to the worktree."""
-    import os as _os
     import json
-    from tmux_agents import worktree as wt_mod
+    import os as _os
+
     from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
     monkeypatch.setattr(_os, "fork", lambda: 0)
@@ -604,9 +614,10 @@ def test_new_provisions_settings_local_json(monkeypatch, tmp_config_dir, tmp_pat
 def test_new_provisioning_is_idempotent(monkeypatch, tmp_config_dir, tmp_path):
     """Running _provision twice on the same worktree must not rewrite the settings file."""
     import os as _os
-    from tmux_agents import worktree as wt_mod
+
     from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
     monkeypatch.setattr(_os, "fork", lambda: 0)
@@ -740,9 +751,12 @@ def test_new_skips_ssh_pump_when_forward_ssh_agent_false(
 ):
     """forward_ssh_agent=false: maybe_spawn_pump is not called at all."""
     import os as _os
-    from tmux_agents import container as container_mod, worktree as wt_mod
-    from tmux_agents import provisioning as prov_mod, startup as startup_mod
+
+    from tmux_agents import container as container_mod
+    from tmux_agents import provisioning as prov_mod
+    from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     repo = tmp_path / "api"
     repo.mkdir()
@@ -791,9 +805,11 @@ def test_new_skips_ssh_pump_when_forward_ssh_agent_false(
 def test_new_skips_ssh_pump_for_host_only(monkeypatch, tmp_config_dir, tmp_path):
     """Host-only project: maybe_spawn_pump is not called (no container)."""
     import os as _os
-    from tmux_agents import worktree as wt_mod, provisioning as prov_mod
+
+    from tmux_agents import provisioning as prov_mod
     from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
     monkeypatch.setattr(_os, "fork", lambda: 0)
@@ -836,6 +852,7 @@ def test_new_skips_ssh_pump_when_python3_missing_with_warning(
 ):
     """python3 missing → PumpResult("disabled_no_python") → stage warn → hold pane."""
     import logging
+
     from tmux_agents.ssh_forward import PumpResult
 
     _provision_env(monkeypatch, tmp_config_dir, tmp_path, warn=False)
@@ -865,6 +882,7 @@ def test_new_skips_ssh_pump_when_host_auth_sock_unset_with_warning(
 ):
     """No SSH_AUTH_SOCK → PumpResult("disabled_no_sock") → warning logged."""
     import logging
+
     from tmux_agents.ssh_forward import PumpResult
 
     _provision_env(monkeypatch, tmp_config_dir, tmp_path, warn=False)
@@ -890,9 +908,11 @@ def test_new_passes_empty_resume_args_to_substitute(
 ):
     """_provision must substitute resume_args="" so {resume_args} resolves to nothing."""
     import os as _os
-    from tmux_agents import worktree as wt_mod, provisioning as prov_mod
+
+    from tmux_agents import provisioning as prov_mod
     from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -938,9 +958,12 @@ def test_new_passes_empty_resume_args_to_substitute(
 def test_new_spawns_ssh_pump_with_project_user(monkeypatch, tmp_config_dir, tmp_path):
     """project.user is passed as the `user` argument to maybe_spawn_pump."""
     import os as _os
-    from tmux_agents import container as container_mod, worktree as wt_mod
-    from tmux_agents import provisioning as prov_mod, startup as startup_mod
+
+    from tmux_agents import container as container_mod
+    from tmux_agents import provisioning as prov_mod
+    from tmux_agents import startup as startup_mod
     from tmux_agents import windows as windows_mod
+    from tmux_agents import worktree as wt_mod
 
     repo = tmp_path / "api"
     repo.mkdir()
@@ -1491,8 +1514,10 @@ def test_new_provision_ensures_codex_hooks_for_host_project(
     """Host-only project: _provision calls codex_hooks.ensure_host(), not
     ensure_container (there's no container to provision into)."""
     import os as _os
-    from tmux_agents import worktree as wt_mod, provisioning as prov_mod
+
+    from tmux_agents import provisioning as prov_mod
     from tmux_agents import startup as startup_mod
+    from tmux_agents import worktree as wt_mod
 
     _, repo2 = _write_config(tmp_config_dir, tmp_path)
     monkeypatch.setattr(_os, "fork", lambda: 0)
@@ -1587,8 +1612,10 @@ def test_new_provision_respawns_codex_when_project_default_is_codex(
     """The final respawn command must use the project's default kind's exec
     template — a codex-default project launches codex, not claude."""
     import os as _os
-    from tmux_agents import worktree as wt_mod, provisioning as prov_mod
+
+    from tmux_agents import provisioning as prov_mod
     from tmux_agents import startup as startup_mod
+    from tmux_agents import worktree as wt_mod
 
     repo = tmp_path / "codexy"
     repo.mkdir()
@@ -1642,13 +1669,17 @@ def _sandbox_provision_env(
     container, and makes any ssh-pump spawn a test failure (sbx forwards
     the host agent natively — the Docker pump must never run)."""
     import os as _os
+
     import pytest as _pytest
+
     from tmux_agents import (
-        worktree,
+        codex_hooks,
         provisioning,
         ssh_forward,
         startup,
-        codex_hooks,
+        worktree,
+    )
+    from tmux_agents import (
         sandbox as sandbox_mod,
     )
     from tmux_agents import windows as windows_mod

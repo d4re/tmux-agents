@@ -3,6 +3,7 @@ pane. The row model, summary renderer, and event handlers live in
 `tmux_agents.overview`."""
 
 import curses
+
 from tmux_agents import logging_setup, overview, tmux
 
 

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from importlib import resources
 from pathlib import Path
+
 import pytest
 
 from tmux_agents import provisioning
@@ -54,7 +55,7 @@ def _run(sh_command: str, env: dict) -> subprocess.CompletedProcess:
     if "TMUX_PANE" not in env:
         merged.pop("TMUX_PANE", None)
     return subprocess.run(
-        [SH, "-c", sh_command], env=merged, capture_output=True, text=True
+        [SH, "-c", sh_command], env=merged, capture_output=True, text=True, check=False
     )
 
 
@@ -83,6 +84,7 @@ def _run_with_input(
         input=payload,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 

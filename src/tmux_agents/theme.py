@@ -1,12 +1,13 @@
 """State-color palette — defaults, config loading, ANSI/tmux derivations."""
 
 from __future__ import annotations
+
 import logging
 import re
 import tomllib
 from dataclasses import dataclass
-from tmux_agents import state
-from tmux_agents import paths
+
+from tmux_agents import paths, state
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class Palette:
     ansi_selected_fg: dict[str, str]
 
     @classmethod
-    def from_hex(cls, colors: dict[str, str]) -> "Palette":
+    def from_hex(cls, colors: dict[str, str]) -> Palette:
         selected = {code: _contrast_fg(h) for code, h in colors.items()}
         return cls(
             fg=dict(colors),

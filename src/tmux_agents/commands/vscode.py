@@ -8,6 +8,7 @@ and `devcontainer = true` projects, no rebuild, no second container.
 """
 
 from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -44,7 +45,7 @@ def _ssh_host_configured(host: str) -> bool:
         # Timeout: a `Match exec` clause in the user's ssh config can stall
         # `ssh -G` indefinitely.
         r = subprocess.run(
-            ["ssh", "-G", host], capture_output=True, text=True, timeout=10
+            ["ssh", "-G", host], capture_output=True, text=True, timeout=10, check=False
         )
     except subprocess.TimeoutExpired:
         return False

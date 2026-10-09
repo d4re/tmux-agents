@@ -1,6 +1,8 @@
-from unittest.mock import MagicMock
 import subprocess
+from unittest.mock import MagicMock
+
 import pytest
+
 from tmux_agents import pickers
 
 
@@ -104,7 +106,7 @@ def test_prompt_yes_no_cancel_raises(monkeypatch):
 
 
 def _stub_fzf(monkeypatch, returncode, stdout):
-    def fake_run(cmd, input=None, capture_output=False, text=False):
+    def fake_run(cmd, input=None, capture_output=False, text=False, check=False):
         return MagicMock(returncode=returncode, stdout=stdout, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -155,7 +157,7 @@ def test_pick_or_create_single_pass(
 def test_pick_or_create_passes_candidates_as_stdin(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, input=None, capture_output=False, text=False):
+    def fake_run(cmd, input=None, capture_output=False, text=False, check=False):
         captured["input"] = input
         return MagicMock(returncode=0, stdout="foo\nfoo\n", stderr="")
 
@@ -183,7 +185,7 @@ def test_pick_or_create_validator_rejects_typed_then_accepts(monkeypatch, capsys
 
 
 def test_pick_or_create_cancel_raises(monkeypatch):
-    def fake_run(cmd, input=None, capture_output=False, text=False):
+    def fake_run(cmd, input=None, capture_output=False, text=False, check=False):
         return MagicMock(returncode=130, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)

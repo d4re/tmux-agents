@@ -42,6 +42,7 @@ def _run_script(tmp_path, panes: str) -> list[str]:
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return [line for line in log.read_text().splitlines() if "resize-pane" in line]

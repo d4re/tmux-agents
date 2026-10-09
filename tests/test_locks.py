@@ -7,13 +7,13 @@ from tmux_agents.windows import WindowMapping
 
 
 def _mk(window_id="@1", **kw):
-    base = dict(
-        window_id=window_id,
-        project="p",
-        branch=None,
-        host_worktree=Path("/r"),
-        pane_id="12",
-    )
+    base = {
+        "window_id": window_id,
+        "project": "p",
+        "branch": None,
+        "host_worktree": Path("/r"),
+        "pane_id": "12",
+    }
     base.update(kw)
     return WindowMapping(**base)
 

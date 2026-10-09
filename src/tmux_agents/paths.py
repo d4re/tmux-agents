@@ -3,6 +3,7 @@ data. Env-overridable (`TMUX_AGENTS_CONFIG_DIR` / `TMUX_AGENTS_STATE_DIR`)
 so tests redirect — every path used elsewhere should come from here."""
 
 from __future__ import annotations
+
 import json
 import logging
 import os
