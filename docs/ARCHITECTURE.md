@@ -38,7 +38,11 @@ spawn `agent-restore --background` before attaching), or neither (fresh
 `tmux new-session -A`). See the "Restore" subsection below for details.
 
 The session is named `agents`. Window `0` is `ctrl` (a plain host shell);
-every other window is one agent.
+every other window is one agent. The server may also hold hidden
+`_term-<n>` sessions — one per agent window whose `prefix t` popup shell
+has been opened (see `agent-terminal`). Every tmux-agents query is scoped
+to the `agents` session, so they never surface as agents, and the
+`prefix w` / `prefix s` pickers filter them out.
 
 ## Data flow — the state pipeline
 
@@ -439,7 +443,7 @@ shell-outs to the dedicated module rather than inline.
 | `locks.py` | The single `locked(path)` `fcntl` context manager for the two `fcntl` locks (window mapping and per-worktree cleanup). Docstring states the global order: cleanup lock first, mapping lock second. `codex-hooks.lock` is also a `fcntl` lock but is never held alongside the other two. |
 | `registry.py` | Scans a pane's `pending-<pane>/` marker dir, computes each marker's effective expiry (exact from `scheduledFor`/cron-expr where possible, heuristic timeout otherwise), GCs expired ones, returns live background/sleeping counts. Uses `croniter` for one-shot cron next-fire (host-side, local TZ). Claude-only in practice — Codex slots never populate this directory. |
 | `theme.py` | Color palette. Dark + light defaults, optional `theme.toml` overrides, derived ANSI/tmux/contrast variants for active-row inversion. Cached per-process. |
-| `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, kill, option setters, `prefix_label` (humanized, process-cached prefix name for hint strings), and `split_window(target, *, percent, command, before=False, horizontal=False, full_size=False)` — `horizontal` → `-h` (agent-other's 50/50 side-by-side), `full_size` → `-f` (the overview's full-width bottom split under a dual-agent window). |
+| `tmux.py` | Sole module that shells out to `tmux -L agents`. Window/pane listings, capture, rename, kill, option setters, `prefix_label` (humanized, process-cached prefix name for hint strings), the hidden `_term-<n>` popup-shell session helpers (`term_session_exists`, `create_term_session`, `term_attach_argv`, `kill_term_session` — every target uses `=` for an exact match, with the trailing colon `set-option`'s pane target needs), and `split_window(target, *, percent, command, before=False, horizontal=False, full_size=False)` — `horizontal` → `-h` (agent-other's 50/50 side-by-side), `full_size` → `-f` (the overview's full-width bottom split under a dual-agent window). |
 | `windows.py` | `WindowMapping`/`AgentSlot` — the `<config_dir>/windows/<window_id>.json` mapping, schema 2 (`agents: list[AgentSlot]`, slot 0 = default agent; see "Window mapping — schema 2" above). `update_mapping(window_id, fn)` / `delete_mapping` are the only mutators, each taking `window_mapping_lock` internally. `__post_init__` (triggered via `from_dict` construction) synthesizes a legacy single-claude-slot mapping when `agents` is absent. `forget(window_id)` tears down mapping + slot files together; it removes an agent from the restore snapshot, so only `agent-kill` and the tick's grace-period GC may call it. |
 | `config.py` | `projects.toml` loader. Resolves the **backend enum** (`Project.backend` ∈ `BACKEND_HOST`/`BACKEND_CONTAINER`/`BACKEND_SANDBOX`; `is_container` is derived from it) from `container` vs `devcontainer = true` vs `sandbox = true` (sandbox is mutually exclusive with the container keys + `user`/`container_workdir`/`up_cmd`), fills in defaults (`up_cmd`, `exec_cmd`, `codex_exec_cmd`, `container_workdir`, `user`, `forward_ssh_agent`, `share_gh_auth`) per backend. Sandbox extras: `sbx_template`/`sbx_kits`/`sbx_memory` (strict-typed) and `sbx_mounts` (normalized to canonical `path[:ro]` argv strings — `~` expanded in Python, resolved, duplicates/missing rejected); `sandbox_name` = project name. Reads top-level `default_agent` and per-project `agent`/`codex_exec_cmd` (both validated against `agent_kind.KINDS`, `ConfigError`/exit 2 otherwise); `Project.exec_cmd_for(kind)` and `exec_cmd_explicit`/`codex_exec_cmd_explicit` (the latter pair tells `agent-other` whether its executable pre-flight is meaningful); `forward_ssh_agent_explicit` (sandbox mode warns only on an explicit key). The optional `base_branch` field is stored on `Project` and forwarded to `worktree.resolve` as `base_override`. |
 | `container.py` | Docker probes: `is_running`, `current_name` (by name OR `devcontainer.local_folder` label), `ensure_up` (runs `up_cmd` once if down), `exec_capture` (run a command inside the container as a given user and capture stdout — used by `agent-other`'s executable pre-flight and by `codex_hooks.ensure_container`), and `rebuild` (force-recreate: devcontainer projects append `--remove-existing-container` [+ `--build-no-cache`] to `up_cmd`; named-container projects `docker rm -f` then re-run `up_cmd`). |
@@ -491,7 +495,7 @@ delivered-file import path under `python -E -S`.
 | `agent-layout` | `commands/layout.py` | Toggle persistent layout file (`<state_dir>/layout`) between `split` and `compact`; rebuilds existing windows accordingly — kills only `@role=overview` panes going to `compact` (never by pane index), so a dual-agent window's two agent panes both survive. |
 | `agent-restore [--background]` | `commands/restore.py` | Read snapshot, harvest every slot's on-disk session id (barrier, before any pane is touched), pre-create placeholder windows (dual split for two-slot entries; overview pane in split layout), run devcontainer `up_cmd`s in parallel, spawn the SSH pump + gh auth sync per container project (sandbox projects instead get `ensure_daemon` once before the wave + per-group `ensure_up`, recreating deleted sandboxes and clearing stale resume ids), ensure Codex hooks per backend, `respawn-pane` each slot with its own kind's resume command. Triggered automatically by the launcher; runnable manually for partial-failure retry, dead-pane recovery, or a secondary-only repair, bound to `Ctrl-Space r`. |
 | `agent-vscode --window-id <id> [--local]` | `commands/vscode.py` | Open the current agent's worktree in VS Code. Host projects → `code <host_worktree>`. Container / devcontainer projects → `code --folder-uri vscode-remote://attached-container+<hex>/<container_workdir>`, reattaching to the running container resolved by `container.current_name` (no rebuild, no second container). Sandbox projects → Remote-SSH: `code --remote ssh-remote+<name>.sbx <workdir>`, preflighted via `ssh -G` against the `sbx setup ssh` managed config (unconfigured → exact fix printed) and via `sandbox.network_allowed` (`sbx policy check network --json`) for the VS Code server download hosts (`update.code.visualstudio.com`, `vscode.download.prss.microsoft.com` — the pushed CLI fetches the server from inside the VM with no client-side fallback; a provable deny prints the exact `sbx policy allow` line, an undecidable probe never vetoes); `--local` opens the host-side worktree instead (passthrough — same files). Resolves the `code` binary via `shutil.which` first, then falls back to a top-level `code_path` in `projects.toml` (default: `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`). Bound to `Ctrl-Space v`. |
-| `agent-terminal --window-id <id>` | `commands/terminal.py` | Pop up a shell in the active agent's context. Host projects → `os.chdir(host_worktree)` then `exec $SHELL -l` (fallback `/bin/bash`). Container / devcontainer projects → `os.execvp("docker", ["exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE", "-u", user, "-w", workdir, name, "bash", "-il"])`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Sandbox projects → `sbx exec -it … <name> bash -lc 'cd <workdir> && exec bash -il'` — never a host shell (that would be a silent isolation hole). Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space t` via `display-popup -E`. Note: this shell carries `TMUX_PANE` but **not** the `TMUX_AGENTS_AGENT` marker, which is deliberate — see "Honest limitations" below. |
+| `agent-terminal --window-id <id>` | `commands/terminal.py` | Persistent shell in the active agent's context, shown in a popup. The shell runs in a hidden per-window session `_term-<n>` (status off; `detach-on-destroy on` / `destroy-unattached off` pinned against `local.conf` overrides), created on first use; the command then execs a nested `tmux attach` to it, so the popup holds a real pane — mouse-drag copy, wheel scrollback, copy-mode and search work there (a bare popup has none of them). An existing session is reattached as-is without re-resolving anything, so reopening returns to the same shell. Shell per backend: host projects → `$SHELL -il` (fallback `/bin/bash`) with the session cwd at `host_worktree`. Container / devcontainer projects → `docker exec -it -e TERM -e COLORTERM -e TMUX_PANE -u <user> -w <workdir> <name> bash -il`, with `-e SSH_AUTH_SOCK=/tmp/tmux-agents-ssh.sock` added when `forward_ssh_agent=True`. Sandbox projects → `sbx exec -it … <name> bash -lc 'cd <workdir> && exec bash -il'` — never a host shell (that would be a silent isolation hole). Container resolved via `container.current_name` (same as `agent-vscode`). Bound to `Ctrl-Space t` via `display-popup -E`; the same key inside a `_term-*` session detaches the nested client instead (hide — as does `prefix d`), and the shell exiting destroys the session and closes the popup. `agent-kill` kills the session along with its window; a window that disappears any other way leaves it until the server exits. The shell's `TMUX_PANE` is its own hidden pane's id, never the agent's, and it does **not** carry the `TMUX_AGENTS_AGENT` marker — see "Honest limitations" below. |
 | `agent-other --window-id <id>` | `commands/other.py` | Start, revive, or focus-switch the window's **secondary** agent (the kind other than slot 0's — Claude↔Codex). No mapping / default slot dead → `display-message` notice, no-op. Both slots live → focus-jump between the two agent panes. Secondary absent or dead → ensure-provisioned + executable pre-flight (skipped for a custom `exec_cmd`/`codex_exec_cmd`) + placeholder-first split/scrub/respawn/publish-last, under the per-worktree cleanup lock. Bound to `Ctrl-Space o` (and `o` in the focused overview pane; uppercase aliases work too). |
 
 ## Supported features
@@ -709,16 +713,18 @@ own (potentially agent-writable) workspace, and because a known Codex bug
 worktrees. The script guards on three conditions before writing anything:
 `TMUX_PANE` set, `$PWD/.local/.tmux-agents` existing (cwd = worktree root —
 every default exec template `cd`s there first), and `TMUX_AGENTS_AGENT=1`
-exported. The third is the load-bearing one: without it, a manual `codex`
-run inside `agent-terminal`'s popup shell (which does propagate `TMUX_PANE`
-and does `cd` into the worktree, by design, so it behaves like a normal
-shell there) would otherwise corrupt the pane's phase and its session-id
-pin. `agent-terminal` deliberately does **not** export the marker, so those
-shells stay inert to the hook. The same latent exposure exists for *Claude*
-run manually there (its hooks key off `TMUX_PANE` alone, no marker check)
-— recorded in `BACKLOG.md` rather than fixed here, since retrofitting the
-marker into every already-provisioned `write-state.sh` would go dark for
-live panes spawned before the change.
+exported. The third keeps any shell that isn't an agent launch inert:
+a manual `codex` run inside a shell that has a `TMUX_PANE` and sits in the
+worktree would otherwise write phases and a session-id pin for that pane.
+`agent-terminal` deliberately does **not** export the marker. Its popup
+shell also runs in its own pane (the hidden `_term-<n>` session), so its
+`TMUX_PANE` is never an agent pane's — a manual `codex` or *Claude* run
+there (Claude's hooks key off `TMUX_PANE` alone, no marker check) can at
+most leave files keyed to that hidden pane, which nothing reads. Extending
+the marker to Claude's `write-state.sh` as defense in depth is recorded in
+`BACKLOG.md` rather than done here, since retrofitting it into every
+already-provisioned `write-state.sh` would go dark for live panes spawned
+before the change.
 
 `session-<pane>.id` doubles as **pin**: `init` (`SessionStart`) overwrites
 it on every `source` except `startup` against an existing, differing pin
@@ -978,9 +984,15 @@ tries `pbcopy` (macOS), then `clip.exe` (WSL), then `wl-copy` (Wayland),
 then `xclip`/`xsel` (X11), falling back to discarding input if none are
 present. A `pane-set-clipboard` hook bridges OSC 52 through the same script
 for terminals like Apple Terminal that drop OSC 52 — required when Claude
-is inside a devcontainer and has no host clipboard tool of its own. Cross-pane
-selection requires holding Option (iTerm2/Ghostty/Alacritty) or Fn
-(Terminal.app) to bypass tmux's mouse capture.
+is inside a devcontainer and has no host clipboard tool of its own. The
+server's `copy-command` points at the same script, so tmux's own copies that
+name no command — the default double-click word / triple-click line bindings
+and copy-mode `Enter` / `C-j` — reach the clipboard too instead of only
+tmux's buffer plus an OSC 52 such terminals drop. All of this works inside
+the `prefix t` popup shell as well, because that shell is a real pane in its
+hidden session (see `agent-terminal`). Cross-pane selection requires holding
+Option (iTerm2/Ghostty/Alacritty) or Fn (Terminal.app) to bypass tmux's
+mouse capture.
 
 ## On-disk layout
 

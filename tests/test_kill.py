@@ -1,6 +1,18 @@
 from pathlib import Path
+
+import pytest
+
 from tmux_agents.commands import kill
 from tmux_agents import container, pickers, tmux, windows, worktree
+
+
+@pytest.fixture(autouse=True)
+def term_killed(monkeypatch):
+    """Capture popup-shell teardown. Autouse so no kill test can reach the
+    live `-L agents` server and end a real agent's `prefix t` shell."""
+    killed: list[str] = []
+    monkeypatch.setattr(tmux, "kill_term_session", lambda wid: killed.append(wid))
+    return killed
 
 
 def _write_mapping(
@@ -629,3 +641,42 @@ def test_kill_with_unknown_window_id_returns_error(monkeypatch):
     monkeypatch.setattr(tmux, "list_windows", lambda s: [])
     rc = kill.main(["--window-id", "@99"])
     assert rc == 2
+
+
+def test_kill_also_ends_the_agents_popup_shell(
+    kill_env, monkeypatch, tmp_state_dir, term_killed
+):
+    """The hidden `prefix t` shell session belongs to the agent; leaving it
+    would keep a host shell or `docker exec` running until the server exits."""
+    _stub_state(tmp_state_dir, "@1", "I")
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+    monkeypatch.setattr(pickers, "prompt_yes_no", lambda prompt, *, default: False)
+
+    assert kill.main([]) == 0
+    assert kill_env.killed == ["@1"]
+    assert term_killed == ["@1"]
+
+
+def test_kill_by_number_also_ends_the_agents_popup_shell(kill_env, term_killed):
+    assert kill.main(["1"]) == 0
+    assert kill_env.killed == ["@1"]
+    assert term_killed == ["@1"]
+
+
+def test_cancelled_kill_keeps_the_popup_shell(
+    kill_env, monkeypatch, tmp_state_dir, term_killed
+):
+    _stub_state(tmp_state_dir, "@1", "I")
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: None)
+
+    assert kill.main([]) == 0
+    assert term_killed == []
+
+
+def test_refused_dirty_prune_keeps_the_popup_shell(kill_env, monkeypatch, term_killed):
+    def boom(repo_arg, branch, *, force=False):
+        raise worktree.DirtyWorktreeError("contains modified or untracked files")
+
+    monkeypatch.setattr(worktree, "remove", boom)
+    assert kill.main(["1", "--prune-worktree"]) == 3
+    assert term_killed == []

@@ -1,11 +1,16 @@
 """`agent-terminal` entry point.
 
-Pops a shell rooted at the active agent's worktree — host projects do
-`chdir` + `exec $SHELL -il`; container/devcontainer projects exec into
-`docker exec -it -u <user> -w <workdir> <container> bash -il` with the
-same env forwarding (TERM, COLORTERM, TMUX_PANE, optional
-SSH_AUTH_SOCK) Claude uses inside the agent pane. Bound to `prefix + t`
-via `display-popup -E` so the popup closes when the shell exits.
+Opens a persistent shell rooted at the active agent's worktree — host
+projects run `$SHELL -il` in the worktree; container/devcontainer projects
+`docker exec -it -u <user> -w <workdir> <container> bash -il` with the same
+env forwarding (TERM, COLORTERM, TMUX_PANE, optional SSH_AUTH_SOCK) Claude
+uses inside the agent pane. Bound to `prefix + t` via `display-popup -E`.
+
+The shell runs in a hidden per-window tmux session (`tmux.create_term_session`)
+and this command execs a nested `tmux attach` to it, so inside the popup tmux's
+mouse copy and copy-mode scrollback work (a popup is not a pane), and hiding
+the popup (`prefix t` again, or `prefix d`) only detaches — reopening returns
+to the same shell. Exiting the shell destroys the session and closes the popup.
 """
 
 from __future__ import annotations
@@ -28,34 +33,35 @@ def _fail(msg: str) -> int:
     return 1
 
 
-def _exec_host(mapping: windows_mod.WindowMapping) -> int:
-    os.chdir(mapping.host_worktree)
+def _host_shell() -> list[str]:
     shell = os.environ.get("SHELL", "/bin/bash")
     # -il = interactive + login. Plain `-l` can exit without a prompt under
     # setups (e.g. zsh4humans) that key init off explicit interactivity.
-    os.execvp(shell, [shell, "-il"])
-    return 0  # unreachable in production
+    return [shell, "-il"]
 
 
-def _exec_container(proj: config.Project, mapping: windows_mod.WindowMapping) -> int:
+def _container_shell(
+    proj: config.Project, mapping: windows_mod.WindowMapping
+) -> list[str] | None:
     name = container.current_name(proj)
     if not name:
-        return _fail(f"no running container for {mapping.project!r}")
+        return None
     workdir = proj.workdir_for(mapping.branch)
     argv = ["docker", "exec", "-it", "-e", "TERM", "-e", "COLORTERM", "-e", "TMUX_PANE"]
     if proj.forward_ssh_agent:
         argv += ["-e", f"SSH_AUTH_SOCK={_SSH_UDS_PATH}"]
     argv += ["-u", proj.user or "vscode", "-w", workdir, name, "bash", "-il"]
-    os.execvp("docker", argv)
-    return 0  # unreachable in production
+    return argv
 
 
-def _exec_sandbox(proj: config.Project, mapping: windows_mod.WindowMapping) -> int:
+def _sandbox_shell(
+    proj: config.Project, mapping: windows_mod.WindowMapping
+) -> list[str]:
     """Shell INSIDE the sandbox — a host shell for a sandbox project would
     be a silent isolation hole. `sbx exec` auto-starts a stopped sandbox;
     worktree paths are host-identical (passthrough), so cd works as-is."""
     workdir = proj.workdir_for(mapping.branch)
-    argv = [
+    return [
         "sbx",
         "exec",
         "-it",
@@ -70,8 +76,27 @@ def _exec_sandbox(proj: config.Project, mapping: windows_mod.WindowMapping) -> i
         "-lc",
         f"cd {shlex.quote(workdir)} && exec bash -il",
     ]
-    os.execvp("sbx", argv)
-    return 0  # unreachable in production
+
+
+def _create_session(window_id: str) -> int:
+    mapping = windows_mod.read_mapping(window_id)
+    if mapping is None:
+        return _fail(f"no window mapping for {window_id}")
+    proj = config.safe_load(paths.projects_toml()).get(mapping.project)
+    if proj is None:
+        return _fail(f"project {mapping.project!r} not in projects.toml")
+
+    cwd = None
+    if proj.backend == config.BACKEND_SANDBOX:
+        argv = _sandbox_shell(proj, mapping)
+    elif proj.is_container:
+        argv = _container_shell(proj, mapping)
+        if argv is None:
+            return _fail(f"no running container for {mapping.project!r}")
+    else:
+        argv, cwd = _host_shell(), str(mapping.host_worktree)
+    tmux.create_term_session(window_id, argv=argv, cwd=cwd)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,15 +105,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--window-id", required=True)
     args = parser.parse_args(argv)
 
-    mapping = windows_mod.read_mapping(args.window_id)
-    if mapping is None:
-        return _fail(f"no window mapping for {args.window_id}")
-    proj = config.safe_load(paths.projects_toml()).get(mapping.project)
-    if proj is None:
-        return _fail(f"project {mapping.project!r} not in projects.toml")
-
-    if proj.backend == config.BACKEND_SANDBOX:
-        return _exec_sandbox(proj, mapping)
-    if proj.is_container:
-        return _exec_container(proj, mapping)
-    return _exec_host(mapping)
+    # An existing session is reattached as-is: that's the persistence, and it
+    # skips the (docker) resolution so reopening the popup is instant.
+    if not tmux.term_session_exists(args.window_id):
+        rc = _create_session(args.window_id)
+        if rc != 0:
+            return rc
+    attach = tmux.term_attach_argv(args.window_id)
+    os.execvp(attach[0], attach)
+    return 0  # unreachable in production

@@ -174,6 +174,7 @@ def _kill_with_optional_prune(win: tmux.Window) -> int:
         if prune and _interactive_prune(win) != 0:
             return 0
     tmux.kill_window(win.id)
+    tmux.kill_term_session(win.id)
     # Deliberate kill: drop the mapping now rather than leaving it to the
     # tick's grace-period GC, so the agent can't reappear in a restore prompt.
     windows_mod.forget(win.id)
@@ -236,4 +237,5 @@ def main(argv: list[str] | None = None) -> int:
             return rc
 
     tmux.kill_window(win.id)
+    tmux.kill_term_session(win.id)
     return 0

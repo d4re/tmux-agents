@@ -82,6 +82,53 @@ def new_session(name: str, *, window_name: str) -> None:
     _run(["new-session", "-d", "-s", name, "-n", window_name], check=True)
 
 
+# The `prefix t` popup shell lives in a hidden per-agent-window session on this
+# same server (so it dies with it, and window ids are never reused within one
+# server's lifetime). The popup attaches a nested client to it: hiding the
+# popup detaches that client and keeps the shell running; the shell exiting
+# destroys the session and closes the popup. Every target uses `=` for an
+# exact match — a bare `_term-3` would prefix-match `_term-31`.
+def _term_session_name(window_id: str) -> str:
+    return f"_term-{window_id.lstrip('@')}"
+
+
+def term_session_exists(window_id: str) -> bool:
+    return (
+        _run(["has-session", "-t", f"={_term_session_name(window_id)}"]).returncode == 0
+    )
+
+
+def create_term_session(
+    window_id: str, *, argv: list[str], cwd: str | None = None
+) -> None:
+    name = _term_session_name(window_id)
+    args = ["new-session", "-d", "-s", name]
+    if cwd is not None:
+        args += ["-c", cwd]
+    _run([*args, *argv], check=True)
+    # status off: an attached client with a status line would run its own
+    # `#(agent-state)` tick. The other two are pinned so a local.conf override
+    # can't strand the popup on another session when the shell exits, or kill
+    # the shell when the popup is hidden. set-option's -t is a pane target,
+    # where an exact session match needs the trailing colon.
+    apply_commands(
+        [
+            f"set-option -t ={name}: status off",
+            f"set-option -t ={name}: detach-on-destroy on",
+            f"set-option -t ={name}: destroy-unattached off",
+        ]
+    )
+
+
+def term_attach_argv(window_id: str) -> list[str]:
+    return [*_TMUX, "attach-session", "-t", f"={_term_session_name(window_id)}"]
+
+
+def kill_term_session(window_id: str) -> None:
+    """Best-effort: most agents never opened a popup shell."""
+    _run(["kill-session", "-t", f"={_term_session_name(window_id)}"])
+
+
 def list_windows(session: str) -> list[Window]:
     # check=True so a transient tmux failure raises instead of silently
     # returning [] — the latter would let the state-tick prune wipe every
