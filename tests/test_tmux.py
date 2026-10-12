@@ -6,6 +6,10 @@ import pytest
 
 from tmux_agents import tmux
 
+# conftest's autouse `_healthy_panes` stubs the module attribute; keep the
+# real probe for the tests below (bound at import, before any fixture runs).
+_real_pane_spawn_info = tmux.pane_spawn_info
+
 
 def _stub_run(monkeypatch, stdout="", returncode=0):
     calls = []
@@ -358,3 +362,34 @@ def test_kill_term_session_tolerates_missing_session(monkeypatch):
     calls = _stub_run(monkeypatch, returncode=1)
     tmux.kill_term_session("@3")
     assert calls == [_PREFIX + ["kill-session", "-t", "=_term-3"]]
+
+
+# ----- pane_spawn_info: the poisoned-pane probe behind startup.respawn -----
+
+
+@pytest.mark.parametrize(
+    "stdout,returncode,expected",
+    [
+        (
+            "@3\t4242\t/work/tree\n",
+            0,
+            tmux.PaneSpawnInfo(window_id="@3", pid=4242, start_path="/work/tree"),
+        ),
+        # A respawn whose fork failed leaves pane_pid at -1 (tmux <= 3.6a).
+        ("@3\t-1\t/work\n", 0, tmux.PaneSpawnInfo("@3", -1, "/work")),
+        ("", 1, None),  # pane gone
+        ("garbage\n", 0, None),
+        ("@3\tx\t/w\n", 0, None),
+    ],
+)
+def test_pane_spawn_info_parses(monkeypatch, stdout, returncode, expected):
+    calls = _stub_run(monkeypatch, stdout=stdout, returncode=returncode)
+    assert _real_pane_spawn_info("%7") == expected
+    assert calls[0][:7] == _PREFIX + ["display-message", "-p", "-t", "%7"]
+
+
+def test_split_window_passes_cwd(monkeypatch):
+    calls = _stub_run(monkeypatch, stdout="%8\n")
+    assert tmux.split_window("%7", percent=50, command="x", cwd="/w") == "%8"
+    argv = calls[0]
+    assert argv[argv.index("-c") + 1] == "/w"

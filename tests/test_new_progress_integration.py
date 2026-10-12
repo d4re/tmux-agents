@@ -113,7 +113,7 @@ def _provision_env_prog(
         monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **k: True)
 
     monkeypatch.setattr(
-        startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
+        startup, "respawn", lambda pid, cmd: cap.respawns.append((pid, cmd)) or pid
     )
     monkeypatch.setattr(
         startup,
@@ -201,10 +201,10 @@ def test_warm_start_emits_skip_lines(
     monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     cap = SimpleNamespace(respawns=[], static_texts=[], holds=[], states=[])
     monkeypatch.setattr(
-        startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
+        startup, "respawn", lambda pid, cmd: cap.respawns.append((pid, cmd)) or pid
     )
-    monkeypatch.setattr(startup, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup, "_write_pane_state", lambda *a, **k: None)
 
     windows_mod.write_mapping(
@@ -331,10 +331,10 @@ def test_host_only_project_skips_worktree_stage(
     monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **k: True)
     cap = SimpleNamespace(respawns=[], static_texts=[], holds=[], states=[])
     monkeypatch.setattr(
-        startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
+        startup, "respawn", lambda pid, cmd: cap.respawns.append((pid, cmd)) or pid
     )
-    monkeypatch.setattr(startup, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup, "_write_pane_state", lambda *a, **k: None)
 
     windows_mod.write_mapping(

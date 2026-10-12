@@ -202,9 +202,9 @@ def _fail_pane(a: Affected, reason: str) -> None:
     for slot in a.mapping.agents:
         if slot.pane_id is None:
             continue
-        startup.show_static_text(f"%{slot.pane_id}", body)
+        shown = startup.show_static_text(f"%{slot.pane_id}", body)
         startup._write_pane_state(
-            a.mapping.host_worktree, slot.pane_id, phase_value=phase.ERRORED
+            a.mapping.host_worktree, shown.lstrip("%"), phase_value=phase.ERRORED
         )
 
 
@@ -222,16 +222,28 @@ def _live_slots(
     ]
 
 
-def _show_placeholders(live: list[tuple[Affected, windows_mod.AgentSlot]]) -> None:
-    """Show live rebuild output where each agent used to be."""
-    for a, slot in live:
-        startup._respawn_with_retry(
+def _show_placeholders(affected: list[Affected]) -> list[Affected]:
+    """Show live rebuild output where each agent used to be. Returns
+    `affected` with the mapping re-read for any window whose pane
+    `startup.respawn` had to replace, so later stages target the new pane."""
+    replaced: set[str] = set()
+    for a, slot in _live_slots(affected):
+        pane = startup.respawn(
             f"%{slot.pane_id}",
             startup.placeholder_command(a.mapping.window_id),
         )
         startup._write_pane_state(
-            a.mapping.host_worktree, slot.pane_id, phase_value=phase.STARTING
+            a.mapping.host_worktree, pane.lstrip("%"), phase_value=phase.STARTING
         )
+        if pane != f"%{slot.pane_id}":
+            replaced.add(a.mapping.window_id)
+    return [
+        dataclasses.replace(a, mapping=fresh)
+        if a.mapping.window_id in replaced
+        and (fresh := windows_mod.read_mapping(a.mapping.window_id)) is not None
+        else a
+        for a in affected
+    ]
 
 
 @contextlib.contextmanager
@@ -265,8 +277,8 @@ def _run_worker(
     the SSH pump, and re-exec every live agent slot's pane. Per-pane
     failures are isolated; a container-rebuild failure marks every pane
     errored."""
+    affected = _show_placeholders(affected)
     live = _live_slots(affected)
-    _show_placeholders(live)
 
     with _multi_reporter(affected, f"Rebuilding container: {proj.name}") as multi:
         try:
@@ -327,11 +339,11 @@ def _run_worker(
                 kind=slot.kind,
                 label=m.window_id,
             )
-            startup._respawn_with_retry(f"%{slot.pane_id}", cmd)
+            pane = startup.respawn(f"%{slot.pane_id}", cmd)
             startup._write_pane_state(
-                m.host_worktree, slot.pane_id, phase_value=phase.STARTING
+                m.host_worktree, pane.lstrip("%"), phase_value=phase.STARTING
             )
-            logger.info("%s: respawned pane=%%%s", m.window_id, slot.pane_id)
+            logger.info("%s: respawned pane=%s", m.window_id, pane)
         except Exception:
             failures += 1
             logger.exception("%s: respawn failed", m.window_id)
@@ -364,8 +376,8 @@ def _run_sandbox_worker(
             "prebuilt images) — proceeding without it",
             proj.name,
         )
+    affected = _show_placeholders(affected)
     live = _live_slots(affected)
-    _show_placeholders(live)
 
     name = proj.sandbox_name
     imported = False
@@ -496,11 +508,11 @@ def _run_sandbox_worker(
             if not imported and slot.kind == agent_kind.CODEX:
                 # Fresh VM has no codex login; holding the pane beats
                 # launching codex into an auth error loop.
-                startup.show_static_text(
+                shown = startup.show_static_text(
                     f"%{slot.pane_id}", sandbox.CODEX_LOGIN_RUNBOOK.format(name=name)
                 )
                 startup._write_pane_state(
-                    m.host_worktree, slot.pane_id, phase_value=phase.ERRORED
+                    m.host_worktree, shown.lstrip("%"), phase_value=phase.ERRORED
                 )
                 continue
             cmd = exec_cmd.build(
@@ -513,11 +525,11 @@ def _run_sandbox_worker(
                 kind=slot.kind,
                 label=m.window_id,
             )
-            startup._respawn_with_retry(f"%{slot.pane_id}", cmd)
+            pane = startup.respawn(f"%{slot.pane_id}", cmd)
             startup._write_pane_state(
-                m.host_worktree, slot.pane_id, phase_value=phase.STARTING
+                m.host_worktree, pane.lstrip("%"), phase_value=phase.STARTING
             )
-            logger.info("%s: respawned pane=%%%s", m.window_id, slot.pane_id)
+            logger.info("%s: respawned pane=%s", m.window_id, pane)
         except Exception:
             failures += 1
             logger.exception("%s: respawn failed", m.window_id)

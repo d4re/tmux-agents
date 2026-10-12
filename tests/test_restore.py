@@ -1513,8 +1513,11 @@ def test_pre_create_salvages_transient_fork_failure(
     projects_file,
 ):
     """The #7 scenario: the placeholder respawn hits a transient fork
-    failure once, then succeeds — the entry must be restored, not skipped."""
-    from tmux_agents import overview, provisioning, startup, tmux
+    failure — the entry must be restored, not skipped. The poisoned pane is
+    never respawned again (that segfaults tmux <= 3.6a); a replacement pane
+    is split off it, the poisoned one killed, and the mapping + placeholder
+    carry the replacement's id."""
+    from tmux_agents import overview, provisioning, startup, tmux, windows
     from tmux_agents.commands import restore
 
     wt = tmp_path / "scripts"
@@ -1525,14 +1528,25 @@ def test_pre_create_salvages_transient_fork_failure(
     monkeypatch.setattr(tmux, "session_exists", lambda s: True)
     monkeypatch.setattr(tmux, "new_window", lambda s, *, name, command: "@new-1")
     monkeypatch.setattr(tmux, "active_pane_id", lambda wid: "%99")
+    monkeypatch.setattr(
+        tmux,
+        "pane_spawn_info",
+        lambda pane: tmux.PaneSpawnInfo(window_id="@new-1", pid=1, start_path="/"),
+    )
     calls = []
 
-    def flaky_respawn(pane, *, command):
+    def failing_respawn(pane, *, command):
         calls.append(pane)
-        if len(calls) == 1:
-            raise _fork_failure()
+        raise _fork_failure()
 
-    monkeypatch.setattr(tmux, "respawn_pane", flaky_respawn)
+    splits, killed = [], []
+    monkeypatch.setattr(tmux, "respawn_pane", failing_respawn)
+    monkeypatch.setattr(
+        tmux,
+        "split_window",
+        lambda target, **kw: splits.append((target, kw["command"])) or "%100",
+    )
+    monkeypatch.setattr(tmux, "kill_pane", lambda pane: killed.append(pane))
     monkeypatch.setattr(startup.time, "sleep", lambda s: None)
     monkeypatch.setattr(overview, "attach_overview_pane", lambda wid: None)
     monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **kw: True)
@@ -1542,8 +1556,12 @@ def test_pre_create_salvages_transient_fork_failure(
     )
     placeholders = restore.pre_create_windows(plan, live_panes={})
 
-    assert "@new-1" in placeholders  # salvaged, not skipped
-    assert len(calls) == 2  # failed once, retried, succeeded
+    assert placeholders["@new-1"].pane_id == "%100"  # salvaged, not skipped
+    assert calls == ["%99"]  # the poisoned pane is respawned exactly once
+    assert splits[0][0] == "%99" and splits[0][1].startswith("tail -F ")
+    assert killed == ["%99"]
+    m = windows.read_mapping("@new-1")
+    assert m.default_slot.pane_id == "100"
 
 
 # ===== Task 16: harvest barrier, classify_secondary, per-slot actions =====
@@ -2819,7 +2837,7 @@ def test_execute_plan_sandbox_failure_marks_panes_with_hint(
     monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: True)
     texts: list[str] = []
     monkeypatch.setattr(
-        startup, "show_static_text", lambda pid, text: texts.append(text)
+        startup, "show_static_text", lambda pid, text: texts.append(text) or pid
     )
 
     projs = _load_test_projects(sandbox_projects_file)
@@ -2899,7 +2917,7 @@ def test_recreated_sandbox_holds_codex_slot_and_persists_id_clearing(
     monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: True)
     texts: list[str] = []
     monkeypatch.setattr(
-        startup, "show_static_text", lambda pid, text: texts.append(text)
+        startup, "show_static_text", lambda pid, text: texts.append(text) or pid
     )
 
     projs = _load_test_projects(sandbox_projects_file)

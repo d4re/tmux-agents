@@ -264,9 +264,9 @@ def _mark_pane_failed(e: Entry, pane_id_full: str, reason: str) -> None:
         f"  Or remove this window with {tmux.prefix_label()} k and re-spawn manually:\n"
         f"    agent-new {new_args}\n\n"
     )
-    startup.show_static_text(pane_id_full, body)
+    shown = startup.show_static_text(pane_id_full, body)
     startup._write_pane_state(
-        e.host_worktree, pane_id_full.lstrip("%"), phase_value=phase.ERRORED
+        e.host_worktree, shown.lstrip("%"), phase_value=phase.ERRORED
     )
 
 
@@ -415,9 +415,12 @@ def _pre_create_reactivate(e: Entry) -> Placeholder | None:
     return a Placeholder pointing at the same pane so `execute_plan` can
     respawn Claude into it once the container is up. No new window is created,
     so retries never accumulate duplicate windows."""
-    full_pane_id = f"%{e.pane_id}"
-    startup._respawn_with_retry(full_pane_id, startup.placeholder_command(e.window_id))
-    startup._write_pane_state(e.host_worktree, e.pane_id, phase_value=phase.STARTING)
+    full_pane_id = startup.respawn(
+        f"%{e.pane_id}", startup.placeholder_command(e.window_id)
+    )
+    startup._write_pane_state(
+        e.host_worktree, full_pane_id.lstrip("%"), phase_value=phase.STARTING
+    )
     logger.info("%s: reactivating errored pane=%s", e.window_id, full_pane_id)
     return Placeholder(e, e.window_id, full_pane_id)
 
@@ -433,14 +436,17 @@ def _pre_create_fresh(e: Entry, layout: str) -> Placeholder:
     )
     if e.branch:
         tmux.set_window_option(new_wid, "@pinned", "1")
-    full_pane_id = tmux.active_pane_id(new_wid)
+    # Respawn first: a fork failure replaces the pane (no mapping yet), and
+    # the scrub below must hit the id the agent actually lands on.
+    full_pane_id = startup.respawn(
+        tmux.active_pane_id(new_wid), startup.placeholder_command(new_wid)
+    )
     pane_stripped = full_pane_id.lstrip("%")
     # Scrub the ASSIGNED pane id before any state write/launch — required
     # before landing an agent on a (possibly recycled) pane id, same
     # aliasing guard `_pre_create_secondary_split` applies for slot 1.
     with locks.locked(paths.worktree_cleanup_lock(e.host_worktree)):
         startup.scrub_pane_files(e.host_worktree, pane_stripped)
-    startup._respawn_with_retry(full_pane_id, startup.placeholder_command(new_wid))
     if layout == "split":
         try:
             overview.attach_overview_pane(new_wid)
@@ -642,10 +648,11 @@ def _reactivate_secondary_in_place(e: Entry, window_id: str) -> str:
     alive but errored, so respawn it back into the placeholder in place —
     no split, no new pane."""
     secondary = e.slots[1]
-    full_pane = f"%{secondary.pane_id}"
-    startup._respawn_with_retry(full_pane, startup.placeholder_command(window_id))
+    full_pane = startup.respawn(
+        f"%{secondary.pane_id}", startup.placeholder_command(window_id)
+    )
     startup._write_pane_state(
-        e.host_worktree, secondary.pane_id, phase_value=phase.STARTING
+        e.host_worktree, full_pane.lstrip("%"), phase_value=phase.STARTING
     )
     logger.info("%s: reactivating errored secondary pane=%s", window_id, full_pane)
     return full_pane
@@ -839,11 +846,11 @@ def _activate_project(
             # A fresh sandbox has no codex login; launching codex into an
             # auth error loop helps nobody — hold the pane on the runbook
             # (the spec's errored-placeholder-with-hint for recreation).
-            startup.show_static_text(
+            shown = startup.show_static_text(
                 pane_full, sandbox.CODEX_LOGIN_RUNBOOK.format(name=proj.sandbox_name)
             )
             startup._write_pane_state(
-                e.host_worktree, pane_full.lstrip("%"), phase_value=phase.ERRORED
+                e.host_worktree, shown.lstrip("%"), phase_value=phase.ERRORED
             )
 
         # Per-entry: hooks + respawn-pane.
@@ -896,44 +903,46 @@ def _activate_project(
                         ),
                     )
                 if ph.pane_id is not None:
+                    pane = ph.pane_id
                     try:
                         if sandbox_created and e.slots[0].kind == agent_kind.CODEX:
-                            _hold_codex_login(ph.pane_id)
+                            _hold_codex_login(pane)
                         else:
                             cmd = _build_slot_cmd(
                                 proj, e, _slot_for_cmd(e.slots[0]), container_name
                             )
-                            startup._respawn_with_retry(ph.pane_id, cmd)
+                            pane = startup.respawn(pane, cmd)
                             logger.info(
                                 "%s: respawned pane=%s cmd_preview=%r",
                                 e.window_id,
-                                ph.pane_id,
+                                pane,
                                 cmd[:80],
                             )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
                         logger.exception("%s: %s", e.window_id, msg)
-                        _mark_pane_failed(e, ph.pane_id, msg)
+                        _mark_pane_failed(e, pane, msg)
                 if ph.secondary_pane_id is not None:
                     secondary = _secondary_slot_for_activation(e, ph.new_window_id)
+                    pane2 = ph.secondary_pane_id
                     try:
                         if sandbox_created and secondary.kind == agent_kind.CODEX:
-                            _hold_codex_login(ph.secondary_pane_id)
+                            _hold_codex_login(pane2)
                         else:
                             cmd2 = _build_slot_cmd(
                                 proj, e, _slot_for_cmd(secondary), container_name
                             )
-                            startup._respawn_with_retry(ph.secondary_pane_id, cmd2)
+                            pane2 = startup.respawn(pane2, cmd2)
                             logger.info(
                                 "%s: respawned secondary pane=%s cmd_preview=%r",
                                 e.window_id,
-                                ph.secondary_pane_id,
+                                pane2,
                                 cmd2[:80],
                             )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
                         logger.exception("%s: %s", e.window_id, msg)
-                        _mark_pane_failed(e, ph.secondary_pane_id, msg)
+                        _mark_pane_failed(e, pane2, msg)
 
 
 def _remove_spawn_logs(entries: list[Entry]) -> None:

@@ -1,6 +1,6 @@
 import pytest
 
-from tmux_agents import paths, startup, tmux
+from tmux_agents import paths, startup, tmux, windows
 
 
 def _tmux_error(stderr):
@@ -29,64 +29,181 @@ def test_placeholder_command_pre_creates_log(tmp_state_dir):
     assert log.exists()
 
 
-def test_respawn_retries_transient_fork_failure_then_succeeds(monkeypatch):
-    """A `fork failed` respawn (transient OS pressure during the restore
-    burst) is retried; the helper returns once a later attempt succeeds."""
-    attempts = []
+class _FakePanes:
+    """Fake tmux pane surface for `startup.respawn`: per-pane pid (-1 =
+    poisoned), scripted respawn/split outcomes, and a record of every call."""
 
-    def fake_respawn(pane_id, *, command):
-        attempts.append(pane_id)
-        if len(attempts) < 3:
-            raise _fork_failure()
+    def __init__(self, monkeypatch, *, pids=None, respawn_errors=(), split_errors=()):
+        self.pids = dict(pids or {})
+        self.respawn_errors = list(respawn_errors)
+        self.split_errors = list(split_errors)
+        self.respawned: list[tuple[str, str]] = []
+        self.splits: list[tuple[str, str, str | None]] = []
+        self.killed: list[str] = []
+        monkeypatch.setattr(tmux, "pane_spawn_info", self.info)
+        monkeypatch.setattr(tmux, "respawn_pane", self.respawn_pane)
+        monkeypatch.setattr(tmux, "split_window", self.split_window)
+        monkeypatch.setattr(tmux, "kill_pane", self.killed.append)
+        monkeypatch.setattr(startup.time, "sleep", lambda s: None)
 
-    monkeypatch.setattr(tmux, "respawn_pane", fake_respawn)
-    sleeps: list[float] = []
-    monkeypatch.setattr(startup.time, "sleep", lambda s: sleeps.append(s))
+    def info(self, pane_id):
+        if pane_id not in self.pids:
+            return None
+        return tmux.PaneSpawnInfo("@4", self.pids[pane_id], "/start")
 
-    startup._respawn_with_retry("%13", "tail -F log")
+    def respawn_pane(self, pane_id, *, command):
+        self.respawned.append((pane_id, command))
+        if self.respawn_errors:
+            raise self.respawn_errors.pop(0)
 
-    assert len(attempts) == 3
-    assert len(sleeps) == 2  # slept between the two failures
+    def split_window(self, target, *, percent, command, cwd=None, **kw):
+        self.splits.append((target, command, cwd))
+        if self.split_errors:
+            raise self.split_errors.pop(0)
+        return "%50"
+
+
+def test_respawn_healthy_pane_returns_same_id(monkeypatch):
+    fake = _FakePanes(monkeypatch, pids={"%13": 77})
+    assert startup.respawn("%13", "tail -F log") == "%13"
+    assert fake.respawned == [("%13", "tail -F log")]
+    assert fake.splits == [] and fake.killed == []
 
 
 def test_respawn_does_not_retry_non_fork_error(monkeypatch):
     """A respawn failure that is NOT a fork failure (e.g. can't find pane)
-    is a real error — raise immediately without retrying or sleeping."""
-    attempts = []
+    is a real error — raise immediately, no replacement."""
+    fake = _FakePanes(
+        monkeypatch,
+        pids={"%13": 77},
+        respawn_errors=[_tmux_error("can't find pane: %13")],
+    )
+    with pytest.raises(tmux.TmuxError):
+        startup.respawn("%13", "tail -F log")
+    assert len(fake.respawned) == 1
+    assert fake.splits == []
 
-    def fake_respawn(pane_id, *, command):
-        attempts.append(pane_id)
-        raise _tmux_error("can't find pane: %13")
 
-    monkeypatch.setattr(tmux, "respawn_pane", fake_respawn)
-    monkeypatch.setattr(
-        startup.time,
-        "sleep",
-        lambda s: (_ for _ in ()).throw(
-            AssertionError("should not sleep on a non-transient error")
-        ),
+def test_respawn_fork_failure_replaces_pane_never_respawns_it_again(monkeypatch):
+    """The 2026-10-12 crash: tmux <= 3.6a leaves a pane whose respawn failed
+    to fork with a NULL input context, and respawning it again segfaults the
+    whole server. The fork failure must be salvaged by a replacement split
+    (same command, same start dir) + killing the poisoned pane."""
+    fake = _FakePanes(monkeypatch, pids={"%13": 77}, respawn_errors=[_fork_failure()])
+    assert startup.respawn("%13", "tail -F log") == "%50"
+    assert [p for p, _ in fake.respawned] == ["%13"]  # exactly once
+    assert fake.splits == [("%13", "tail -F log", "/start")]
+    assert fake.killed == ["%13"]
+
+
+def test_respawn_poisoned_pane_is_replaced_without_respawning(monkeypatch):
+    """A pane already poisoned by an earlier process (pane_pid == -1), e.g.
+    an errored placeholder `agent-restore` reactivates, is never respawned."""
+    fake = _FakePanes(monkeypatch, pids={"%13": -1})
+    assert startup.respawn("%13", "tail -F log") == "%50"
+    assert fake.respawned == []
+    assert fake.killed == ["%13"]
+
+
+def test_respawn_retries_split_on_fork_failure(monkeypatch):
+    """A failed split removes its own pane cleanly, so retrying it is safe."""
+    fake = _FakePanes(
+        monkeypatch,
+        pids={"%13": -1},
+        split_errors=[_fork_failure(), _fork_failure()],
+    )
+    assert startup.respawn("%13", "tail -F log") == "%50"
+    assert len(fake.splits) == 3
+    assert fake.killed == ["%13"]
+
+
+def test_respawn_gives_up_after_max_split_attempts(monkeypatch):
+    """Persistent fork failures re-raise so the caller can fall back to its
+    skip-and-log handling; the poisoned pane is left alone (killing it
+    could close the window and orphan its mapping)."""
+    fake = _FakePanes(
+        monkeypatch,
+        pids={"%13": -1},
+        split_errors=[_fork_failure()] * startup._FORK_RETRY_ATTEMPTS,
+    )
+    with pytest.raises(tmux.TmuxError):
+        startup.respawn("%13", "tail -F log")
+    assert len(fake.splits) == startup._FORK_RETRY_ATTEMPTS
+    assert fake.killed == []
+
+
+def _write_dual_mapping(worktree, *, secondary):
+    windows.write_mapping(
+        windows.WindowMapping(
+            window_id="@4",
+            project="p",
+            branch=None,
+            host_worktree=worktree,
+            pane_id="13",
+            agents=[
+                windows.AgentSlot(kind="claude", pane_id="13", session_id="s0"),
+                secondary,
+            ],
+        )
     )
 
-    with pytest.raises(tmux.TmuxError):
-        startup._respawn_with_retry("%13", "tail -F log")
-    assert len(attempts) == 1
+
+def test_replacement_moves_mapping_slot_and_pane_files(
+    monkeypatch, tmp_state_dir, tmp_path
+):
+    """The mapping is authoritative for which pane a slot lives in (the tick
+    reads `state-<pane>.json` by it), so the replacement must take the slot
+    — and the old pane's state + captured session id — with it."""
+    wt = tmp_path / "wt"
+    _write_dual_mapping(wt, secondary=windows.AgentSlot(kind="codex", pane_id="14"))
+    old_state = paths.worktree_state_file(wt, "13")
+    old_state.parent.mkdir(parents=True, exist_ok=True)
+    old_state.write_text('{"phase": "starting"}')
+    paths.worktree_session_id_file(wt, "13").write_text("sid-13")
+    stale_new = paths.worktree_pending_dir(wt, "50")
+    stale_new.mkdir(parents=True)  # recycled id leftovers must be scrubbed
+    _FakePanes(monkeypatch, pids={"%13": -1})
+
+    assert startup.respawn("%13", "cmd") == "%50"
+
+    m = windows.read_mapping("@4")
+    assert m.pane_id == "50"
+    assert [s.pane_id for s in m.agents] == ["50", "14"]
+    assert m.default_slot.session_id == "s0"
+    assert not old_state.exists()
+    assert paths.worktree_state_file(wt, "50").read_text() == '{"phase": "starting"}'
+    assert paths.worktree_session_id_file(wt, "50").read_text() == "sid-13"
+    assert not stale_new.exists()
 
 
-def test_respawn_gives_up_after_max_attempts(monkeypatch):
-    """Persistent fork failures eventually re-raise so the caller can fall
-    back to its skip-and-log handling."""
-    attempts = []
+def test_replacement_revives_death_marked_secondary(
+    monkeypatch, tmp_state_dir, tmp_path
+):
+    """The tick death-marks a secondary whose pane looks dead (a poisoned
+    pane does): pane_id None, last_pane_id kept. The replacement must
+    revive that slot onto the new pane rather than miss it."""
+    wt = tmp_path / "wt"
+    _write_dual_mapping(
+        wt,
+        secondary=windows.AgentSlot(
+            kind="codex", pane_id=None, session_id="s1", last_pane_id="14"
+        ),
+    )
+    _FakePanes(monkeypatch, pids={"%14": -1})
 
-    def fake_respawn(pane_id, *, command):
-        attempts.append(pane_id)
-        raise _fork_failure()
+    assert startup.respawn("%14", "cmd") == "%50"
 
-    monkeypatch.setattr(tmux, "respawn_pane", fake_respawn)
-    monkeypatch.setattr(startup.time, "sleep", lambda s: None)
+    sec = windows.read_mapping("@4").secondary_slot
+    assert (sec.pane_id, sec.last_pane_id, sec.session_id) == ("50", None, "s1")
 
-    with pytest.raises(tmux.TmuxError):
-        startup._respawn_with_retry("%13", "tail -F log")
-    assert len(attempts) == startup._FORK_RETRY_ATTEMPTS
+
+def test_show_static_text_on_poisoned_pane_replaces_it(monkeypatch):
+    """The failure notice after a fork failure is the other crash path: it
+    must go through the replacement too and report the pane it landed in."""
+    fake = _FakePanes(monkeypatch, pids={"%5": -1})
+    assert startup.show_static_text("%5", "\n  boom\n") == "%50"
+    assert fake.respawned == []
+    assert "boom" in fake.splits[0][1]
 
 
 def test_detach_stdio_redirects_std_fds_to_devnull():
