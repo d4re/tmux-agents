@@ -129,6 +129,19 @@ def test_daemon_running_needs_rc0_and_running_status(runs):
     assert sandbox.daemon_running() is False
 
 
+def test_daemon_running_accepts_decorated_status_line(runs):
+    """sbx 0.48 pads the value and prefixes a bullet glyph; a running daemon
+    must not read as down (that made ensure_daemon poll a live daemon until
+    its start timeout)."""
+    out = "  Status:  \u25cf running\n  Socket:  /x/sandboxd.sock\n"
+    runs.queue.append(_result(rc=0, stdout=out))
+    assert sandbox.daemon_running() is True
+    runs.queue.append(_result(rc=0, stdout="  Status:  \u25cf stopped\n"))
+    assert sandbox.daemon_running() is False
+    runs.queue.append(_result(rc=0, stdout="  Status:  \u25cf not running\n"))
+    assert sandbox.daemon_running() is False
+
+
 def test_ensure_daemon_skips_start_when_running(runs, tmp_state_dir):
     runs.queue.append(_result(rc=0, stdout="Status: running"))
     sandbox.ensure_daemon()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import shlex
 import subprocess
 import time
@@ -149,12 +150,19 @@ def network_allowed(name: str, host: str) -> bool | None:
     return allowed if isinstance(allowed, bool) else None
 
 
+# Tolerant of decoration between label and value: 0.48 prints
+# "Status:  ● running" (padding + a bullet glyph), older builds "Status: running".
+_DAEMON_RUNNING_RE = re.compile(
+    r"^\s*status:[^a-z\n]*running\b", re.IGNORECASE | re.MULTILINE
+)
+
+
 def daemon_running() -> bool:
     """`sbx daemon status` semantics when stopped are unverified upstream —
     require BOTH rc 0 and a 'Status: running' line so either failure shape
     (nonzero rc, or rc 0 + 'Status: stopped') reads as down."""
     r = _run(["daemon", "status"], timeout=PROBE_TIMEOUT)
-    return r.returncode == 0 and "status: running" in (r.stdout or "").lower()
+    return r.returncode == 0 and bool(_DAEMON_RUNNING_RE.search(r.stdout or ""))
 
 
 def ensure_daemon() -> None:
