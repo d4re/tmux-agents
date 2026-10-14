@@ -208,7 +208,9 @@ def test_sandbox_project_uses_remote_ssh(monkeypatch, tmp_config_dir, tmp_path):
     rc = vscode.main(["--window-id", "@1"])
 
     assert rc == 0
-    assert called == [[CODE_BIN, "--remote", "ssh-remote+svc.sbx", str(worktree)]]
+    assert called == [
+        [CODE_BIN, "--folder-uri", f"vscode-remote://ssh-remote+svc.sbx{worktree}"]
+    ]
 
 
 def test_sandbox_ssh_unconfigured_prints_fix(
@@ -273,7 +275,9 @@ def test_sandbox_egress_probe_unknown_does_not_block(
     rc = vscode.main(["--window-id", "@1"])
 
     assert rc == 0
-    assert called == [[CODE_BIN, "--remote", "ssh-remote+svc.sbx", str(worktree)]]
+    assert called == [
+        [CODE_BIN, "--folder-uri", f"vscode-remote://ssh-remote+svc.sbx{worktree}"]
+    ]
 
 
 def test_sandbox_local_flag_opens_host_folder(monkeypatch, tmp_config_dir, tmp_path):

@@ -261,6 +261,19 @@ the callback port for the duration of the login:
 `sbx ports <name> --publish 1455:1455`, log in, `--unpublish 1455:1455`).
 Optionally `sbx skills import` to seed the shared skills store.
 
+On Linux and WSL2, use the Linux release tarball (`install.sh` puts it under
+`~/.docker/sbx`) — **not** a Windows `sbx.exe` reached via WSL interop: the
+workspace must keep its host path inside the VM, which a Windows sbx can't
+do for WSL paths (it sees `\\wsl.localhost\…`). The user also needs
+`/dev/kvm` access: `sudo usermod -aG kvm $USER`, then `wsl --shutdown` (or
+log out) so the group applies; `sbx diagnose` checks it. For Windows VS
+Code to attach (`agent-vscode`), point Remote-SSH at WSL's OpenSSH with
+`"remote.SSH.path"` → a `.cmd` wrapper running
+`C:\Windows\System32\wsl.exe -d <distro> -e ssh %*`. Windows `ssh.exe` with a
+`wsl.exe … sbx ssh proxy %n` ProxyCommand does connect, but sbx drops stdin
+sent before the remote command starts, so Remote-SSH's piped install script
+silently never runs ("Got bad result from install script").
+
 ## Theming
 
 State colors (R/W/B/Z/I/X/S) default to a dark palette tuned for truecolor

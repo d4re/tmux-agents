@@ -139,7 +139,11 @@ def main(argv: list[str] | None = None) -> int:
                 f'network --sandbox {proj.sandbox_name} "{hosts}" '
                 "(or use --local for the host-side folder)"
             )
-        cmd = [code, "--remote", f"ssh-remote+{host}", proj.workdir_for(mapping.branch)]
+        # A full URI, not `--remote ssh-remote+HOST PATH`: under WSL the `code`
+        # shim hands off to the WSL extension's CLI, which rewrites bare paths
+        # into wsl+<distro> URIs (the window never reaches Remote-SSH).
+        uri = f"vscode-remote://ssh-remote+{host}{proj.workdir_for(mapping.branch)}"
+        cmd = [code, "--folder-uri", uri]
     elif proj.is_container:
         name = container.current_name(proj)
         if not name:
