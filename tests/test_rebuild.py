@@ -248,7 +248,7 @@ def _stub_worker_io(monkeypatch):
     respawns: list[tuple[str, str]] = []
     states: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        startup, "_respawn_with_retry", lambda pane, cmd: respawns.append((pane, cmd))
+        startup, "respawn", lambda pane, cmd: respawns.append((pane, cmd)) or pane
     )
     monkeypatch.setattr(
         startup,
@@ -322,7 +322,7 @@ def test_worker_container_failure_marks_panes_errored(monkeypatch, tmp_state_dir
     )
     failed = []
     monkeypatch.setattr(
-        startup, "show_static_text", lambda pane, body: failed.append(pane)
+        startup, "show_static_text", lambda pane, body: failed.append(pane) or pane
     )
     proj = _proj(devcontainer=True, up_cmd="devcontainer up")
     affected = [_affected(pane_id="23"), _affected(pane_id="24")]
@@ -341,8 +341,9 @@ def test_worker_isolates_a_failing_respawn(monkeypatch, tmp_state_dir):
         # Placeholder respawns (first pass) succeed; the second final respawn blows up.
         if cmd.startswith("claude") and pane == "%24":
             raise RuntimeError("pane gone")
+        return pane
 
-    monkeypatch.setattr(startup, "_respawn_with_retry", flaky)
+    monkeypatch.setattr(startup, "respawn", flaky)
     proj = _proj(devcontainer=True, up_cmd="devcontainer up")
     affected = [_affected(pane_id="23", session_id="s"), _affected(pane_id="24")]
 
@@ -631,7 +632,7 @@ def test_sandbox_worker_export_failure_aborts(monkeypatch, tmp_state_dir):
     )
     texts = []
     monkeypatch.setattr(
-        startup, "show_static_text", lambda pane, body: texts.append(body)
+        startup, "show_static_text", lambda pane, body: texts.append(body) or pane
     )
 
     rc = rebuild._run_sandbox_worker(
@@ -660,7 +661,9 @@ def test_sandbox_worker_import_failure_falls_back_fresh(monkeypatch, tmp_state_d
     monkeypatch.setattr(sandbox_mod, "import_state", boom)
     texts = []
     monkeypatch.setattr(
-        startup, "show_static_text", lambda pane, body: texts.append((pane, body))
+        startup,
+        "show_static_text",
+        lambda pane, body: texts.append((pane, body)) or pane,
     )
 
     m = windows_mod.WindowMapping(

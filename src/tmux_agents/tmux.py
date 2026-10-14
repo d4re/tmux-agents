@@ -216,17 +216,21 @@ def split_window(
     before: bool = False,
     horizontal: bool = False,
     full_size: bool = False,
+    cwd: str | None = None,
 ) -> str:
     """Split `target` and return the new pane id. `horizontal=True` → `-h`
     (side-by-side; default `-v`). `full_size=True` → `-f` (new pane spans
     the full window edge — used by the overview so it sits under BOTH
     agent panes of a dual window). `before=True` → `-b`. `-l <n>%` not
-    `-p` (tmux 3.4 rejects -p)."""
+    `-p` (tmux 3.4 rejects -p). `cwd` → `-c` (without it the new pane
+    starts in the calling process's cwd, not the target pane's)."""
     args = ["split-window", "-h" if horizontal else "-v"]
     if full_size:
         args.append("-f")
     if before:
         args.append("-b")
+    if cwd:
+        args += ["-c", cwd]
     args += ["-d", "-l", f"{percent}%", "-P", "-F", "#{pane_id}", "-t", target, command]
     return _run(args, check=True).stdout.strip()
 
@@ -389,6 +393,39 @@ def resize_pane(pane_id: str, *, height: int) -> None:
 def display_message(text: str) -> None:
     """Flash `text` in tmux's status line via `display-message`."""
     _run(["display-message", text])
+
+
+@dataclass(frozen=True)
+class PaneSpawnInfo:
+    window_id: str
+    pid: int  # -1 = the pane's last spawn failed to fork (see startup.respawn)
+    start_path: str
+
+
+def pane_spawn_info(pane_id: str) -> PaneSpawnInfo | None:
+    """What `startup.respawn` needs to decide whether `pane_id` can be
+    respawned and, if not, how to replace it. None if the pane is gone or
+    the output can't be parsed — the caller's respawn then surfaces the real
+    error."""
+    out = _run(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{window_id}\t#{pane_pid}\t#{pane_start_path}",
+        ]
+    )
+    if out.returncode != 0:
+        return None
+    parts = out.stdout.rstrip("\n").split("\t", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        return None
+    return PaneSpawnInfo(window_id=parts[0], pid=pid, start_path=parts[2])
 
 
 def respawn_pane(pane_id: str, *, command: str) -> None:

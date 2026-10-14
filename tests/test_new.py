@@ -138,7 +138,7 @@ def _provision_env(
     monkeypatch.setattr(codex_hooks, "ensure_host", lambda: True)
     monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     monkeypatch.setattr(
-        startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
+        startup, "respawn", lambda pid, cmd: cap.respawns.append((pid, cmd)) or pid
     )
     monkeypatch.setattr(
         startup,
@@ -327,11 +327,11 @@ def test_new_host_only_skips_container_up(monkeypatch, tmp_config_dir, tmp_path)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
     monkeypatch.setattr(
         startup_mod,
-        "_respawn_with_retry",
+        "respawn",
         lambda pid, cmd: cap.respawns.append((pid, cmd)),
     )
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     rc = new.main(
@@ -499,11 +499,11 @@ def test_new_devcontainer_resolved_name_flows_to_exec_cmd(
     monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
     monkeypatch.setattr(
         startup_mod,
-        "_respawn_with_retry",
+        "respawn",
         lambda pid, cmd: cap.respawns.append((pid, cmd)),
     )
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     rc = new.main(
@@ -593,9 +593,9 @@ def test_new_provisions_settings_local_json(monkeypatch, tmp_config_dir, tmp_pat
         )
     )
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo2)
-    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "respawn", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     rc = new.main(
@@ -624,9 +624,9 @@ def test_new_provisioning_is_idempotent(monkeypatch, tmp_config_dir, tmp_path):
     monkeypatch.setattr(_os, "setsid", lambda: None)
     monkeypatch.setattr(startup_mod, "_detach_stdio", lambda: None)
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo2)
-    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "respawn", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     windows_mod.write_mapping(
@@ -791,9 +791,9 @@ def test_new_skips_ssh_pump_when_forward_ssh_agent_false(
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
     monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
-    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "respawn", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
     rc = new.main(
         ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "api"]
@@ -833,9 +833,9 @@ def test_new_skips_ssh_pump_for_host_only(monkeypatch, tmp_config_dir, tmp_path)
     )
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo2)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
-    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "respawn", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
     rc = new.main(
         ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "scripts"]
@@ -939,11 +939,11 @@ def test_new_passes_empty_resume_args_to_substitute(
     captured = {}
     monkeypatch.setattr(
         startup_mod,
-        "_respawn_with_retry",
+        "respawn",
         lambda pid, cmd: captured.__setitem__("cmd", cmd),
     )
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     rc = new.main(
@@ -998,9 +998,9 @@ def test_new_spawns_ssh_pump_with_project_user(monkeypatch, tmp_config_dir, tmp_
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
     monkeypatch.setattr(codex_hooks, "ensure_container", lambda name, user: True)
-    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "respawn", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
     rc = new.main(
         ["--provision", "--window-id", "@5", "--pane-id", "23", "--project", "api"]
@@ -1535,9 +1535,9 @@ def test_new_provision_ensures_codex_hooks_for_host_project(
     )
     monkeypatch.setattr(wt_mod, "resolve", lambda *a, **k: repo2)
     monkeypatch.setattr(prov_mod, "provision_settings", lambda *a, **k: True)
-    monkeypatch.setattr(startup_mod, "_respawn_with_retry", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "respawn", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     host_calls = []
@@ -1642,11 +1642,11 @@ def test_new_provision_respawns_codex_when_project_default_is_codex(
     captured = {}
     monkeypatch.setattr(
         startup_mod,
-        "_respawn_with_retry",
+        "respawn",
         lambda pid, cmd: captured.__setitem__("cmd", cmd),
     )
-    monkeypatch.setattr(startup_mod, "show_static_text", lambda *a: None)
-    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda *a: None)
+    monkeypatch.setattr(startup_mod, "show_static_text", lambda pane, *a: pane)
+    monkeypatch.setattr(startup_mod, "hold_pane_then_exec", lambda pane, *a: pane)
     monkeypatch.setattr(startup_mod, "_write_pane_state", lambda *a, **k: None)
 
     rc = new.main(
@@ -1737,7 +1737,7 @@ def _sandbox_provision_env(
     monkeypatch.setattr(worktree, "check_freshness", lambda *a, **k: None)
     monkeypatch.setattr(provisioning, "provision_settings", lambda *a, **k: True)
     monkeypatch.setattr(
-        startup, "_respawn_with_retry", lambda pid, cmd: cap.respawns.append((pid, cmd))
+        startup, "respawn", lambda pid, cmd: cap.respawns.append((pid, cmd)) or pid
     )
     monkeypatch.setattr(
         startup,

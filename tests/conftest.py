@@ -18,6 +18,19 @@ def _reset_prefix_label_cache():
 
 
 @pytest.fixture(autouse=True)
+def _healthy_panes(monkeypatch):
+    """`startup.respawn` probes the pane before respawning it; most tests
+    only fake `tmux.respawn_pane`, so default the probe to a healthy pane
+    instead of letting it query the real `-L agents` server. Tests of the
+    poisoned-pane path override it."""
+    monkeypatch.setattr(
+        tmux,
+        "pane_spawn_info",
+        lambda pane_id: tmux.PaneSpawnInfo(window_id="@0", pid=1, start_path="/"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _auto_isolate_paths(tmp_path, monkeypatch):
     """Default both config and state dirs to per-test tmp paths so no test can
     accidentally read or write the real `~/.config/tmux-agents/` or

@@ -414,7 +414,7 @@ to the spawn log (`paths.spawn_log(window_id)`); the placeholder pane's
    check, not presence: a mutated script or hand-edited `hooks.json` heals
    on the next call rather than needing a version sidecar.
 7. **Respawn.** Once the log file is closed:
-   - No warnings → `startup._respawn_with_retry` swaps the pane into the
+   - No warnings → `startup.respawn` swaps the pane into the
      real `exec_cmd.build(...)` for slot 0's kind (`proj.agent`).
    - Non-fatal warning → `startup.hold_pane_then_exec` shows the log
      plus a "press Enter to launch" prompt (pane state shows `W`), then
@@ -462,7 +462,7 @@ shell-outs to the dedicated module rather than inline.
 | `_ssh_framing.py` | Wire framing (4-byte length prefix + payload, `\x00\x00\x00\x00` sentinel) and the bidirectional `splice()` between a raw UDS socket and a framed stream pair. |
 | `_ssh_pump_script.py` | Host-side pump. For each in-container SSH op, opens a fresh connection to the host's `$SSH_AUTH_SOCK` and splices it. |
 | `_ssh_relay_script.py` | In-container relay. Bind-or-exit dedup at `/tmp/tmux-agents-ssh.sock`, accepts client connections, splices each through stdin/stdout to the pump. |
-| `startup.py` | Shared spawn/restore primitives used by `agent-new`, `agent-other`, and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `_respawn_with_retry` (fork-safe respawn with backoff), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec), `scrub_pane_files(worktree, pane_id)` (delete a pane's state/session/pending files under the resolved worktree — required by every spawn path, and by the tick's dead-slot sweep, before (re)launching an agent into a pane id that may have been recycled). |
+| `startup.py` | Shared spawn/restore primitives used by `agent-new`, `agent-other`, and `agent-restore`: `placeholder_command` (build the `tail -F` pane command), `respawn` (fork-safe respawn: replaces a pane poisoned by a fork failure and returns the pane id now in use), `_detach_stdio` (redirect fds 0/1/2 to `/dev/null` in a backgrounded worker), `_write_pane_state` (write a `phase=…` state JSON), `show_static_text` (respawn pane into a static heredoc), `hold_pane_then_exec` (show log + "press Enter" prompt, then exec), `scrub_pane_files(worktree, pane_id)` (delete a pane's state/session/pending files under the resolved worktree — required by every spawn path, and by the tick's dead-slot sweep, before (re)launching an agent into a pane id that may have been recycled). |
 | `progress.py` | Per-stage progress display. `Reporter` writes to a single output stream; `MultiReporter` fans out to N reporters for events shared across restore's project groups. Symbols: `▸` info / `✓` success / `!` warning (non-fatal) / `✗` fatal failure. Both `agent-new --provision` and `agent-restore` write each window's progress to `<state_dir>/spawn-<window_id>.log` (`paths.spawn_log`); the placeholder pane runs `tail -F <log>` and is replaced by `respawn-pane` when the worker finishes. |
 | `commands/restore.py` | The `agent-restore` worker. Snapshot reading + validation, per-slot plan (`EntryKind` for slot 0, independent `SlotAction` for an existing secondary), a global session-id harvest barrier across every slot of every entry before any pane is touched, project grouping, placeholder pre-creation (dual split for two-slot entries), backend-dispatched bring-up + per-entry respawn (kind-aware, via `exec_cmd.build`): container ensure-up + SSH pump + gh auth sync for container projects; for sandbox projects `sandbox.ensure_daemon` once before the parallel wave, then per-group `sandbox.ensure_up` + gh auth sync — a DELETED sandbox is recreated fresh (exec auto-start only covers stopped), and when that happened the session-id clearing is PERSISTED into each mapping (not just omitted from the respawn) and codex slots are held on `sandbox.CODEX_LOGIN_RUNBOOK` (errored) instead of launching codex into an auth error loop. Codex hook ensure-provisioned per backend, failure logging + error display. Imports shared primitives from `startup.py`. |
 | `commands/rebuild.py` | `agent-rebuild`. Interactive half (popup): eligible-project picker with live agent tallies (eligible = sandbox, devcontainer, or named container with explicit `up_cmd`), tiered confirm (default-No when **any live slot** is `R`/`W`/`B`; sandbox phrasing notes state is exported/restored), then fires the detached worker via `tmux run-shell -b`. `--worker` half (parented to the server): fork/setsid/detach-stdio (same as `agent-new --provision` — otherwise tmux paints the worker's output, e.g. `devcontainer up` JSON, over the active pane in view mode), then show `tail -F` progress in each affected pane and dispatch on backend. Container: `container.rebuild`, respawn the SSH pump + gh auth sync, Codex hook ensure-provisioned, re-exec **every live slot's** pane via `exec_cmd.build` (kind-aware resume). Sandbox (`_run_sandbox_worker`): **state-preserving recreate** — daemon first (so a daemon-down failure never suggests `--discard-state`), `sandbox.export_state` (abort without deleting anything on failure, unless `--discard-state`) persisted to `paths.sbx_rebuild_backup(name)` (0600, fsync'd) BEFORE the rm so a worker crash can't lose it, `sandbox.recreate` (rm → create as one locked critical section; new template/mounts/memory take effect), `import_state` (success deletes the backup; failure keeps it for manual recovery and degrades to fresh: session ids cleared in the mappings, codex slots held on `sandbox.CODEX_LOGIN_RUNBOOK` marked `X`), `codex_hooks.ensure_sandbox`, gh auth sync (the recreate wiped the sandbox's gh login — deliberately not in the state export), respawn; `--no-cache` warns and is ignored. Per-pane failures isolated; a bring-up failure marks every pane `X`. Deliberately does **not** scrub pane files: every slot it touches is a live, still-mapped pane being resumed in place, not a possibly-recycled id, so its state/session files must survive the rebuild. |
@@ -884,15 +884,27 @@ prints the reason and recovery instructions, kept alive with a sleep
 loop. The per-pane state is set to `phase=errored` so the overview
 shows `X` for that window.
 
-Both restore respawns (placeholder pre-create + activation) go through
-`startup._respawn_with_retry`, which retries transient `fork failed`
-errors (macOS can briefly refuse a pane spawn during the burst of
-`devcontainer up` + ssh pump + 14 panes all forking at once) up to
-`_FORK_RETRY_ATTEMPTS` times with a short backoff before falling back to
-the per-entry failure handling above. The retry keys off stderr now
-surfaced by `tmux.TmuxError` (a `CalledProcessError` subclass whose
-`str()` appends tmux's stderr — the base class reports only the exit
-code); non-fork failures re-raise immediately.
+Every respawn (restore placeholder pre-create + activation, `agent-new`,
+`agent-rebuild`, and `show_static_text`'s failure notices) goes through
+`startup.respawn`. macOS can briefly refuse a pane spawn with `fork
+failed` (e.g. `Device not configured`) during the restore burst. The
+failed pane must **not** be respawned again: tmux ≤ 3.6a frees the
+pane's input context before forking and leaves it NULL on failure, so a
+second `respawn-pane` on it segfaults the whole server (fixed upstream
+after 3.6a) — the old retry-in-place did exactly that and took every
+agent down. Such a poisoned pane reports `pane_pid == -1`
+(`tmux.pane_spawn_info`), and `respawn` checks for it up front too, so a
+pane left poisoned by an earlier process is handled the same way. It
+splits a replacement pane off the poisoned one with the same command and
+start dir (a failed split removes its own pane, so that is retried up to
+`_FORK_RETRY_ATTEMPTS` times with a short backoff), moves the window
+mapping's slot and the pane's state/session-id files to the new id, then
+kills the poisoned pane, whose space the replacement inherits. `respawn`
+returns the pane id now in use; callers use it for any later state write
+or respawn. Giving up re-raises into the per-entry failure handling
+above. Detection keys off stderr surfaced by `tmux.TmuxError` (a
+`CalledProcessError` subclass whose `str()` appends tmux's stderr); other
+failures re-raise immediately.
 
 A manual `agent-restore` rerun against a still-live session now
 classifies each snapshot entry as `skip` / `revive` / `fresh` /

@@ -148,9 +148,11 @@ def _provision(
             f"    agent-new {new_args}\n\n"
             f"  Or remove this window with {tmux.prefix_label()} k.\n\n"
         )
-        startup.show_static_text(full_pane, body)
+        shown = startup.show_static_text(full_pane, body)
         if worktree_path is not None:
-            startup._write_pane_state(worktree_path, pane_id, phase_value=phase.ERRORED)
+            startup._write_pane_state(
+                worktree_path, shown.lstrip("%"), phase_value=phase.ERRORED
+            )
         else:
             # Worktree doesn't exist yet — flip the host-side hint to errored.
             # update_mapping (not a bare read+write) so a mapping mutated
@@ -339,9 +341,9 @@ def _provision(
         # Log file closed. Swap the pane into Claude (or hold on warning).
         if reporter.had_warning:
             startup._write_pane_state(wt_path, pane_id, phase_value=phase.WAITING)
-            startup.hold_pane_then_exec(full_pane, log_path, cmd)
+            full_pane = startup.hold_pane_then_exec(full_pane, log_path, cmd)
         else:
-            startup._respawn_with_retry(full_pane, cmd)
+            full_pane = startup.respawn(full_pane, cmd)
         logger.info(
             "%s: provisioned, pane=%s warning=%s",
             window_id,
@@ -442,7 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     if branch:
         tmux.set_window_option(window_id, "@pinned", "1")
     full_pane_id = tmux.active_pane_id(window_id)
-    startup._respawn_with_retry(full_pane_id, startup.placeholder_command(window_id))
+    # No mapping exists yet, so a replaced pane only changes the id used below.
+    full_pane_id = startup.respawn(full_pane_id, startup.placeholder_command(window_id))
     pane_id = full_pane_id.lstrip("%")
     # Best-effort: clear any stale per-pane state from a previous session so a
     # recycled pane id doesn't show a stale letter during startup.
