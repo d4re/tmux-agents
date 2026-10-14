@@ -308,7 +308,7 @@ inspection matters — host-side file views can't show the sandbox's
 toolchain, venvs, or running processes). Sandbox projects attach via
 Remote-SSH instead of the container attach: `sbx setup ssh` provisions
 hostnames (`{name}.sbx`); `agent-vscode` runs
-`code --remote ssh-remote+{name}.sbx {workdir}`. Caveats to build around:
+`code --folder-uri vscode-remote://ssh-remote+{name}.sbx{workdir}`. Caveats to build around:
 
 - SSH support is upstream-experimental — degrade gracefully: if
   `sbx setup ssh` hasn't run or the managed SSH config is broken, print
