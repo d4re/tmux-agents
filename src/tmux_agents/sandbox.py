@@ -122,14 +122,20 @@ def deliver(
 
 def status(name: str) -> str | None:
     """Sandbox `name`'s status from `sbx ls --json` ("running", "stopped",
-    …), or None when no such sandbox exists."""
+    …), or None when no such sandbox exists. Accepts both shapes: a bare
+    list (0.49+) and the older `{"sandboxes": [...]}` wrapper; anything
+    else raises SandboxError (the only error callers catch)."""
     r = _check(_run(["ls", "--json"], timeout=PROBE_TIMEOUT), "ls")
     try:
         data = json.loads(r.stdout or "")
     except ValueError as ex:
         raise SandboxError(f"sbx ls --json returned non-JSON: {ex}") from ex
-    for sb in data.get("sandboxes") or []:
-        if sb.get("name") == name:
+    if isinstance(data, dict):
+        data = data.get("sandboxes")
+    if not isinstance(data, list):
+        raise SandboxError(f"sbx ls --json: unexpected shape {type(data).__name__}")
+    for sb in data:
+        if isinstance(sb, dict) and sb.get("name") == name:
             return sb.get("status")
     return None
 

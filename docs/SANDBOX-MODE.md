@@ -407,7 +407,7 @@ upstream):
   default; review before upgrading past 0.38.
 - Kits and SSH are experimental; the kit schema (v2) is weeks old. Pin the
   sbx version in the docs and treat upgrades as events.
-- **Stale workspace entries** (unfiled; observed on v0.42.0, 2026-10-23).
+- **Stale workspace entries** (observed on v0.42.0; **gone in v0.49.2**, re-tested 2026-10-23).
   sbx serves the workspace through its own virtiofs server (sailor), not
   Apple's. If anything in the guest looks a path up before the host creates
   it, the guest keeps getting ENOENT for that name indefinitely — measured
@@ -419,7 +419,12 @@ upstream):
   sandbox; daemon restart if that doesn't clear it). Related upstream:
   #533 (still-provisional inodes served from the server's model), #328
   (moved dir vanishes / stale cwd, daemon restart recovers), #629 (missing
-  readdir name, fixed 0.48). Re-test on ≥0.49 before filing.
+  readdir name, fixed 0.48). On 0.49.2 the same probes pass (a name
+  created after a guest miss is visible at once; host deletions leave
+  no ghosts), so nothing was filed; the `path_visible` guard stays as a
+  cheap tripwire for older installs or a regression.
+- **`sbx ls --json` shape changed in 0.49**: a bare list instead of
+  `{"sandboxes": [...]}`. `sandbox.status` accepts both.
 - Unfiled (ours to file): multiple built-in agent kits' OAuth bindings per
   sandbox; the silent-breakage bug distilled from the #344 family.
 
