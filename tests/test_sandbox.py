@@ -495,6 +495,36 @@ def test_reap_pane_agents_never_boots_a_stopped_sandbox(runs):
     assert len(runs.calls) == 1
 
 
+def test_status_reads_bare_list_json_from_sbx_049(runs):
+    # sbx 0.49 dropped the {"sandboxes": [...]} wrapper: `ls --json` is a
+    # bare list of sandbox objects.
+    runs.queue.append(
+        _result(
+            stdout='[{"name": "other", "status": "running"}, '
+            '{"name": "proj", "status": "stopped", "memory": "12g"}]'
+        )
+    )
+    assert sandbox.status("proj") == "stopped"
+
+
+def test_status_reads_wrapped_json_from_older_sbx(runs):
+    runs.queue.append(_result(stdout=_ls_json("running")))
+    assert sandbox.status("proj") == "running"
+
+
+def test_status_absent_sandbox_is_none(runs):
+    runs.queue.append(_result(stdout='[{"name": "other", "status": "running"}]'))
+    assert sandbox.status("proj") is None
+
+
+def test_status_unexpected_json_shape_raises_sandbox_error(runs):
+    # Callers (agent-kill) catch SandboxError only — a format drift must
+    # never surface as AttributeError/TypeError and abort the kill.
+    runs.queue.append(_result(stdout='"surprise"'))
+    with pytest.raises(sandbox.SandboxError):
+        sandbox.status("proj")
+
+
 def test_reap_pane_agents_without_pane_ids_does_nothing(runs):
     assert sandbox.reap_pane_agents("proj", []) == 0
     assert runs.calls == []
