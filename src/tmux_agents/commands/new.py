@@ -295,6 +295,24 @@ def _provision(
                     ),
                 )
 
+            # sbx's workspace share can keep answering ENOENT for a name the
+            # guest looked up before the host created it (docs/SANDBOX-MODE.md
+            # "Stale workspace entries"). Launching anyway leaves a pane that
+            # dies on `cd` with no explanation; None = probe inconclusive.
+            if (
+                proj.backend == config.BACKEND_SANDBOX
+                and wt_path != proj.repo
+                and sandbox.path_visible(proj.sandbox_name, str(wt_path)) is False
+            ):
+                return _fatal(
+                    f"sandbox {proj.sandbox_name} cannot see the worktree "
+                    f"{wt_path} (stale sbx workspace cache). Restart the sandbox "
+                    f"— sbx stop {proj.sandbox_name}; its other agents come back "
+                    f"via {tmux.prefix_label()} r — or, if that doesn't clear it, "
+                    "sbx daemon stop && sbx daemon start -d",
+                    worktree_path=wt_path,
+                )
+
             with reporter.stage("hooks") as st:
                 try:
                     with resources.as_file(

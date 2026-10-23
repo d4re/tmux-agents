@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from tmux_agents import container, pickers, tmux, windows, worktree
+from tmux_agents import container, pickers, sandbox, tmux, windows, worktree
 from tmux_agents.commands import kill
 
 
@@ -13,6 +13,19 @@ def term_killed(monkeypatch):
     killed: list[str] = []
     monkeypatch.setattr(tmux, "kill_term_session", lambda wid: killed.append(wid))
     return killed
+
+
+@pytest.fixture(autouse=True)
+def reaped(monkeypatch):
+    """Capture guest-side agent reaps. Autouse so no kill test can run a
+    real `sbx exec` against the user's live sandboxes."""
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        sandbox,
+        "reap_pane_agents",
+        lambda name, pane_ids: calls.append((name, sorted(pane_ids))) or 0,
+    )
+    return calls
 
 
 def _write_mapping(
@@ -679,3 +692,86 @@ def test_refused_dirty_prune_keeps_the_popup_shell(kill_env, monkeypatch, term_k
     monkeypatch.setattr(worktree, "remove", boom)
     assert kill.main(["1", "--prune-worktree"]) == 3
     assert term_killed == []
+
+
+# --- sandbox projects: reap the guest-side agent -------------------------------
+#
+# Killing the pane only kills the host's `sbx exec` client; the agent keeps
+# running inside the VM. agent-kill must terminate it there too.
+
+
+@pytest.fixture
+def sbx_kill_env(kill_env, tmp_config_dir):
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[api]\nrepo = "{kill_env.repo}"\nsandbox = true\n'
+    )
+    windows.write_mapping(
+        windows.WindowMapping(
+            window_id="@1",
+            project="api",
+            branch="feat-x",
+            host_worktree=kill_env.repo / ".worktrees" / "feat-x",
+            pane_id="23",
+            agents=[
+                windows.AgentSlot(kind="claude", pane_id="23"),
+                windows.AgentSlot(kind="codex", pane_id=None, last_pane_id="24"),
+            ],
+        )
+    )
+    return kill_env
+
+
+def test_kill_sandbox_window_reaps_guest_agents_before_killing(
+    sbx_kill_env, monkeypatch, reaped
+):
+    events = []
+    monkeypatch.setattr(
+        sandbox,
+        "reap_pane_agents",
+        lambda name, pane_ids: events.append(("reap", name, sorted(pane_ids))) or 1,
+    )
+    monkeypatch.setattr(tmux, "kill_window", lambda t: events.append(("kill", t)))
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+    monkeypatch.setattr(pickers, "prompt_yes_no", lambda prompt, *, default: False)
+
+    assert kill.main([]) == 0
+    assert events == [("reap", "api", ["23", "24"]), ("kill", "@1")]
+
+
+def test_kill_by_number_reaps_sandbox_guest_agents(sbx_kill_env, reaped):
+    assert kill.main(["1"]) == 0
+    assert reaped == [("api", ["23", "24"])]
+    assert sbx_kill_env.killed == ["@1"]
+
+
+def test_kill_sandbox_reap_failure_still_kills_window(sbx_kill_env, monkeypatch):
+    def boom(name, pane_ids):
+        raise sandbox.SandboxError("daemon down")
+
+    monkeypatch.setattr(sandbox, "reap_pane_agents", boom)
+    assert kill.main(["1"]) == 0
+    assert sbx_kill_env.killed == ["@1"]
+
+
+def test_kill_sandbox_dirty_worktree_kept_does_not_reap(
+    sbx_kill_env, monkeypatch, reaped
+):
+    """Declining the force-remove keeps the window alive — its agent too."""
+    (sbx_kill_env.repo / ".worktrees" / "feat-x").mkdir(parents=True)
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+    answers = iter([True, False])  # prune? yes; force remove? no
+    monkeypatch.setattr(pickers, "prompt_yes_no", lambda p, *, default: next(answers))
+
+    def dirty(*a, **k):
+        raise worktree.DirtyWorktreeError("dirty")
+
+    monkeypatch.setattr(worktree, "remove", dirty)
+    assert kill.main([]) == 0
+    assert reaped == []
+    assert sbx_kill_env.killed == []
+
+
+def test_kill_host_project_never_reaps(kill_env, reaped):
+    _write_mapping("@1", "api", "feat-x", kill_env.repo / ".worktrees" / "feat-x")
+    assert kill.main(["1"]) == 0
+    assert reaped == []

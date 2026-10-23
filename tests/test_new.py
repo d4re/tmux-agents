@@ -1718,6 +1718,7 @@ def _sandbox_provision_env(
     monkeypatch.setattr(
         sandbox_mod, "ensure_up", lambda p: cap.sandbox_calls.append("up") or False
     )
+    monkeypatch.setattr(sandbox_mod, "path_visible", lambda name, path: True)
     monkeypatch.setattr(
         codex_hooks,
         "ensure_sandbox",
@@ -1742,7 +1743,7 @@ def _sandbox_provision_env(
     monkeypatch.setattr(
         startup,
         "show_static_text",
-        lambda pid, text: cap.static_texts.append((pid, text)),
+        lambda pid, text: cap.static_texts.append((pid, text)) or pid,
     )
     monkeypatch.setattr(
         startup,
@@ -1809,3 +1810,70 @@ def test_provision_sandbox_warns_on_explicit_forward_ssh_agent(
     )
     assert rc == 0  # no-op-with-warning, never fatal, never a pump
     assert any("no-op in sandbox mode" in w for w in warnings)
+
+
+def _provision_sandbox_branch(monkeypatch, tmp_path, *, visible):
+    """Provision `sbxproj feat-x` with the worktree resolving under the repo
+    and the guest visibility probe answering `visible`."""
+    from tmux_agents import sandbox as sandbox_mod
+    from tmux_agents import worktree
+
+    wt = tmp_path / "sbxrepo" / ".worktrees" / "feat-x"
+    wt.mkdir(parents=True)
+    monkeypatch.setattr(worktree, "resolve", lambda *a, **k: wt)
+    probed = []
+    monkeypatch.setattr(
+        sandbox_mod,
+        "path_visible",
+        lambda name, path: probed.append((name, str(path))) or visible,
+    )
+    rc = new.main(
+        [
+            "--provision",
+            "--window-id",
+            "@5",
+            "--pane-id",
+            "23",
+            "--project",
+            "sbxproj",
+            "--branch",
+            "feat-x",
+        ]
+    )
+    return rc, probed, wt
+
+
+def test_provision_sandbox_fails_loudly_when_guest_cannot_see_worktree(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    """The sbx workspace share can cache a lookup made before the worktree
+    existed and keep returning ENOENT for it. Launching anyway leaves a pane
+    that dies on `cd` with no explanation — fail with the remedy instead."""
+    cap = _sandbox_provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    rc, probed, wt = _provision_sandbox_branch(monkeypatch, tmp_path, visible=False)
+    assert rc == 4
+    assert probed == [("sbxproj", str(wt))]
+    assert cap.respawns == []
+    assert cap.states == ["errored"]
+    (_, text) = cap.static_texts[-1]
+    assert "cannot see the worktree" in text
+    assert "sbx stop sbxproj" in text
+
+
+def test_provision_sandbox_proceeds_when_worktree_visible(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    cap = _sandbox_provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    rc, probed, _ = _provision_sandbox_branch(monkeypatch, tmp_path, visible=True)
+    assert rc == 0
+    assert len(probed) == 1
+    assert len(cap.respawns) == 1
+
+
+def test_provision_sandbox_inconclusive_probe_does_not_veto(
+    monkeypatch, tmp_config_dir, tmp_path
+):
+    cap = _sandbox_provision_env(monkeypatch, tmp_config_dir, tmp_path)
+    rc, _, _ = _provision_sandbox_branch(monkeypatch, tmp_path, visible=None)
+    assert rc == 0
+    assert len(cap.respawns) == 1

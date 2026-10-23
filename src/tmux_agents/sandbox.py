@@ -120,6 +120,102 @@ def deliver(
     exec_capture(name, script, stdin=content)
 
 
+def status(name: str) -> str | None:
+    """Sandbox `name`'s status from `sbx ls --json` ("running", "stopped",
+    …), or None when no such sandbox exists."""
+    r = _check(_run(["ls", "--json"], timeout=PROBE_TIMEOUT), "ls")
+    try:
+        data = json.loads(r.stdout or "")
+    except ValueError as ex:
+        raise SandboxError(f"sbx ls --json returned non-JSON: {ex}") from ex
+    for sb in data.get("sandboxes") or []:
+        if sb.get("name") == name:
+            return sb.get("status")
+    return None
+
+
+def path_visible(name: str, path: str) -> bool | None:
+    """Does sandbox `name` see `path` as a directory? None when the probe
+    can't decide, so callers treat None as "don't veto". Exists because
+    the workspace virtiofs share caches a negative lookup indefinitely:
+    if anything in the guest looked a path up before the host created it,
+    the guest keeps getting ENOENT for that name (sbx v0.42.0 — survives
+    guest drop_caches and host rename; only a sandbox restart clears it)."""
+    q = shlex.quote(str(path))
+    try:
+        out = exec_capture(
+            name,
+            f"if [ -d {q} ]; then echo yes; else echo no; fi",
+            timeout=PROBE_TIMEOUT,
+        )
+    except SandboxError as ex:
+        logger.debug("visibility probe of %s in %r skipped: %s", path, name, ex)
+        return None
+    return {"yes": True, "no": False}.get(out.strip())
+
+
+# Find guest processes launched for the given panes and terminate them.
+# Every agent exec template passes `-e TMUX_PANE -e TMUX_AGENTS_AGENT=1`, and
+# children inherit both, so the match is exact per pane (the space-padded
+# list keeps %4 from matching %40) and never touches the user's own shells.
+# TERM first so claude can end its session cleanly; KILL what's left.
+_REAP_SCRIPT = """
+panes=' @PANES@ '
+pids=
+for d in @PROC@/[0-9]*; do
+  pid=${d##*/}
+  [ "$pid" = "$$" ] && continue
+  e=$(tr '\\000' '\\n' < "$d/environ" 2>/dev/null) || continue
+  printf '%s\\n' "$e" | grep -qx 'TMUX_AGENTS_AGENT=1' || continue
+  p=$(printf '%s\\n' "$e" | sed -n 's/^TMUX_PANE=//p')
+  [ -n "$p" ] || continue
+  case "$panes" in *" $p "*) pids="$pids $pid" ;; esac
+done
+set -- $pids
+echo $#
+[ $# -eq 0 ] && exit 0
+kill -TERM "$@" 2>/dev/null
+i=0
+while [ $i -lt @TICKS@ ]; do
+  alive=
+  for pid in "$@"; do kill -0 "$pid" 2>/dev/null && alive="$alive $pid"; done
+  [ -z "$alive" ] && exit 0
+  sleep 0.1
+  i=$((i + 1))
+done
+kill -KILL $alive 2>/dev/null
+exit 0
+"""
+
+
+def _reap_script(
+    pane_ids: list[str], *, proc_root: str = "/proc", grace_s: float = 3
+) -> str:
+    return (
+        _REAP_SCRIPT.replace("@PANES@", " ".join(f"%{p}" for p in pane_ids))
+        .replace("@PROC@", shlex.quote(proc_root))
+        .replace("@TICKS@", str(max(1, round(grace_s * 10))))
+    )
+
+
+def reap_pane_agents(name: str, pane_ids: list[str]) -> int:
+    """Terminate the agent processes inside sandbox `name` that were
+    launched for `pane_ids` (stripped ids). Returns how many were found.
+
+    Killing a tmux pane only kills the host-side `sbx exec` client — the
+    guest process survives, keeps running in a possibly-deleted worktree,
+    and pins it so the guest still lists it after the host removed it.
+    A sandbox that isn't running has nothing to reap and is NOT booted
+    (`sbx exec` would auto-start it). Raises SandboxError on sbx failure."""
+    if not pane_ids or status(name) != "running":
+        return 0
+    out = exec_capture(name, _reap_script(pane_ids))
+    try:
+        return int(out.strip() or 0)
+    except ValueError:
+        return 0
+
+
 def network_allowed(name: str, host: str) -> bool | None:
     """Would sandbox `name`'s egress policy let it reach `host` (port 443)?
     Read-only `sbx policy check network --json`. True/False from the JSON
