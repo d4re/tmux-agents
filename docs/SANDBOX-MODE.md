@@ -53,6 +53,7 @@ behavior matrix to settle before coding:
 | worktree resolve/prune | container paths | host paths (worktrees are host-side; passthrough preserves them) |
 | exec-cmd preflight | container `command -v` | in-sandbox `command -v` |
 | `agent-kill` / idle lifecycle | container keeps running | **nothing to build**: sbx auto-stops idle sandboxes on its own (upstream #450 documents the feature racing starts) and `sbx exec` auto-starts on next use — idle cost self-manages |
+| `agent-kill` guest cleanup | `docker exec` session dies with the pane | `reap_pane_agents`: killing the pane only kills the host `sbx exec` client — the guest agent survives — so kill terminates it in the VM (see `sandbox.py`) |
 
 `forward_ssh_agent` is defined as a no-op-with-warning in sandbox mode: sbx
 forwards the host agent natively, and the Docker SSH pump must never spawn.
@@ -150,6 +151,19 @@ check-then-create race that this module must not copy.
   `sbx create --name {sbx_name} [-t {sbx_template}] [--kit …]…
   [-m {sbx_memory}] claude {repo} {sbx_mounts…}`. Agent positional is
   always `claude` (see Codex section).
+- `status(name)` — `sbx ls --json` status (`running`/`stopped`/…, None
+  when absent).
+- `reap_pane_agents(name, pane_ids)` — `agent-kill`'s guest-side cleanup.
+  Killing a pane kills only the host's `sbx exec` client; the guest
+  `claude`/`codex` keeps running, holds its worktree (which the guest then
+  keeps listing after the host deleted it), and is invisible to tmux.
+  Matches guest processes carrying `TMUX_AGENTS_AGENT=1` + `TMUX_PANE=%<id>`
+  (every exec template passes both; children inherit them; the
+  `agent-terminal` shell carries neither marker), SIGTERM then SIGKILL after
+  a 3 s grace. Skips a sandbox that isn't running — `sbx exec` would boot it.
+- `path_visible(name, path)` — True/False/None (inconclusive) probe of
+  whether the guest sees a host directory; `agent-new` fails a sandbox
+  spawn whose fresh worktree is invisible (see "Stale workspace entries").
 - **Actionable errors, bounded time.** Three failures the user can fix get
   first-class detection and an exact remediation command in the spawn log:
   sbx not installed, Docker login expired (`run: sbx login` — sessions
@@ -393,6 +407,19 @@ upstream):
   default; review before upgrading past 0.38.
 - Kits and SSH are experimental; the kit schema (v2) is weeks old. Pin the
   sbx version in the docs and treat upgrades as events.
+- **Stale workspace entries** (unfiled; observed on v0.42.0, 2026-10-23).
+  sbx serves the workspace through its own virtiofs server (sailor), not
+  Apple's. If anything in the guest looks a path up before the host creates
+  it, the guest keeps getting ENOENT for that name indefinitely — measured
+  >5 min, unaffected by guest `drop_caches`, host rename away/back, or host
+  rmdir+mkdir; names never looked up before are visible at once. Hit in
+  practice as a fresh `agent-new` worktree the sandbox couldn't `cd` into
+  (pane died, window `X`). Mitigation here is detection only:
+  `agent-new` probes `path_visible` and fails with the remedy (restart the
+  sandbox; daemon restart if that doesn't clear it). Related upstream:
+  #533 (still-provisional inodes served from the server's model), #328
+  (moved dir vanishes / stale cwd, daemon restart recovers), #629 (missing
+  readdir name, fixed 0.48). Re-test on ≥0.49 before filing.
 - Unfiled (ours to file): multiple built-in agent kits' OAuth bindings per
   sandbox; the silent-breakage bug distilled from the #344 family.
 

@@ -13,6 +13,7 @@ from tmux_agents import (
     logging_setup,
     paths,
     pickers,
+    sandbox,
     tmux,
     worktree,
 )
@@ -164,6 +165,36 @@ def _has_worktree(win: tmux.Window) -> bool:
     return m.host_worktree.is_dir()
 
 
+def _reap_guest_agents(win: tmux.Window) -> None:
+    """Sandbox projects: terminate the window's agents inside the VM.
+
+    Killing the tmux pane only kills the host-side `sbx exec` client; the
+    guest `claude`/`codex` keeps running — invisible, still holding its
+    (possibly just-removed) worktree, which the guest then keeps listing.
+    Best-effort: a failure here must never block the kill itself."""
+    m = windows_mod.read_mapping(win.id)
+    if m is None:
+        return
+    proj = config.safe_load(paths.projects_toml()).get(m.project)
+    if proj is None or proj.backend != config.BACKEND_SANDBOX:
+        return
+    pane_ids = sorted(
+        {p for slot in m.agents for p in (slot.pane_id, slot.last_pane_id) if p}
+    )
+    try:
+        n = sandbox.reap_pane_agents(proj.sandbox_name, pane_ids)
+    except sandbox.SandboxError as e:
+        logger.warning("%s: could not stop agents in sandbox: %s", win.id, e)
+        return
+    if n:
+        logger.info(
+            "%s: stopped %d agent process(es) in sandbox %s",
+            win.id,
+            n,
+            proj.sandbox_name,
+        )
+
+
 def _kill_with_optional_prune(win: tmux.Window) -> int:
     """Prompt for worktree pruning (only when a worktree exists) then kill."""
     if _has_worktree(win):
@@ -175,6 +206,7 @@ def _kill_with_optional_prune(win: tmux.Window) -> int:
             return 0
         if prune and _interactive_prune(win) != 0:
             return 0
+    _reap_guest_agents(win)
     tmux.kill_window(win.id)
     tmux.kill_term_session(win.id)
     # Deliberate kill: drop the mapping now rather than leaving it to the
@@ -238,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             return rc
 
+    _reap_guest_agents(win)
     tmux.kill_window(win.id)
     tmux.kill_term_session(win.id)
     return 0

@@ -351,3 +351,165 @@ def test_network_allowed_unknown_when_sbx_missing_or_slow(runs):
     assert sandbox.network_allowed("acg", "h") is None
     runs.queue.append(subprocess.TimeoutExpired("sbx", 15))
     assert sandbox.network_allowed("acg", "h") is None
+
+
+# --- reap_pane_agents: guest-side cleanup for agent-kill --------------------
+#
+# `sbx exec` does not forward the host-side hangup into the guest, so killing
+# a pane leaves its `claude` running in the VM (pinning deleted worktrees as
+# ghost dirs). The reap script is plain sh over /proc; these run it for real
+# against a fake proc root whose pid dirs point at real local processes.
+
+
+def _spawn_sleeper(*, ignore_term: bool = False) -> int:
+    """Start a sleeper that is NOT our child (sh backgrounds it and exits),
+    so launchd/init reaps it on death — a zombie child of pytest would
+    still answer `kill -0` and stall the reap script's grace loop."""
+    import shlex
+    import sys
+
+    code = (
+        "import signal, time\n"
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+        + "print('ready', flush=True)\ntime.sleep(60)\n"
+    )
+    sh = subprocess.Popen(
+        ["sh", "-c", f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} & echo $!"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    pid = int(sh.stdout.readline())
+    assert sh.stdout.readline().strip() == "ready"
+    sh.wait()
+    sh.stdout.close()
+    return pid
+
+
+def _alive(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_dead(pid: int, timeout: float = 5) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _cleanup(*pids: int) -> None:
+    import os
+    import signal
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _fake_proc(root, pid: int, env: dict[str, str]) -> None:
+    d = root / str(pid)
+    d.mkdir(parents=True)
+    (d / "environ").write_bytes(b"".join(f"{k}={v}\0".encode() for k, v in env.items()))
+
+
+def _run_reap_script(script: str) -> str:
+    return subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=30, check=True
+    ).stdout
+
+
+def test_reap_script_kills_only_tagged_agents_of_the_given_panes(tmp_path):
+    target = _spawn_sleeper()
+    other_pane = _spawn_sleeper()  # %4 — must not match %40 by prefix
+    untagged = _spawn_sleeper()  # right pane, but not an agent-launched process
+    try:
+        _fake_proc(tmp_path, target, {"TMUX_AGENTS_AGENT": "1", "TMUX_PANE": "%40"})
+        _fake_proc(tmp_path, other_pane, {"TMUX_AGENTS_AGENT": "1", "TMUX_PANE": "%4"})
+        _fake_proc(tmp_path, untagged, {"TMUX_PANE": "%40"})
+        import time
+
+        start = time.monotonic()
+        out = _run_reap_script(
+            sandbox._reap_script(["40"], proc_root=str(tmp_path), grace_s=10)
+        )
+        # Well inside the grace window: the target died of SIGTERM, not of
+        # the SIGKILL fallback.
+        assert time.monotonic() - start < 3
+        assert out.strip() == "1"
+        assert _wait_dead(target)
+        assert _alive(other_pane)
+        assert _alive(untagged)
+    finally:
+        _cleanup(target, other_pane, untagged)
+
+
+def test_reap_script_sigkills_agents_that_ignore_sigterm(tmp_path):
+    stubborn = _spawn_sleeper(ignore_term=True)
+    try:
+        _fake_proc(tmp_path, stubborn, {"TMUX_AGENTS_AGENT": "1", "TMUX_PANE": "%7"})
+        out = _run_reap_script(
+            sandbox._reap_script(["7"], proc_root=str(tmp_path), grace_s=0.3)
+        )
+        assert out.strip() == "1"
+        assert _wait_dead(stubborn)  # SIGTERM is ignored: only the KILL ends it
+    finally:
+        _cleanup(stubborn)
+
+
+def test_reap_script_with_no_match_reports_zero(tmp_path):
+    out = _run_reap_script(sandbox._reap_script(["40"], proc_root=str(tmp_path)))
+    assert out.strip() == "0"
+
+
+def _ls_json(status: str) -> str:
+    return (
+        '{"sandboxes": [{"name": "other", "status": "running"}, '
+        f'{{"name": "proj", "status": "{status}"}}]}}'
+    )
+
+
+def test_reap_pane_agents_runs_script_in_running_sandbox(runs):
+    runs.queue += [_result(stdout=_ls_json("running")), _result(stdout="2\n")]
+    assert sandbox.reap_pane_agents("proj", ["40", "41"]) == 2
+    exec_argv = runs.calls[1]["argv"]
+    assert exec_argv[:3] == ["sbx", "exec", "proj"]
+    assert "%40" in exec_argv[-1] and "%41" in exec_argv[-1]
+
+
+def test_reap_pane_agents_never_boots_a_stopped_sandbox(runs):
+    # `sbx exec` auto-starts a stopped VM — a stopped VM has no processes
+    # to reap, so booting one from agent-kill would be pure cost.
+    runs.queue.append(_result(stdout=_ls_json("stopped")))
+    assert sandbox.reap_pane_agents("proj", ["40"]) == 0
+    assert len(runs.calls) == 1
+
+
+def test_reap_pane_agents_without_pane_ids_does_nothing(runs):
+    assert sandbox.reap_pane_agents("proj", []) == 0
+    assert runs.calls == []
+
+
+# --- path_visible: does the guest see a host path? ---------------------------
+
+
+def test_path_visible_true_and_false(runs):
+    runs.queue += [_result(stdout="yes\n"), _result(stdout="no\n")]
+    assert sandbox.path_visible("proj", "/w/feat x") is True
+    assert sandbox.path_visible("proj", "/w/feat x") is False
+    assert "'/w/feat x'" in runs.calls[0]["argv"][-1]
+
+
+def test_path_visible_unknown_when_probe_fails(runs):
+    runs.queue.append(_result(rc=1, stderr="boom"))
+    assert sandbox.path_visible("proj", "/w") is None
