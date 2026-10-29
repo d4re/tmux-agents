@@ -572,6 +572,35 @@ def test_tick_merges_session_id_into_mapping(
     assert m.claude_session_id == "01234567-89ab-cdef-0123-456789abcdef"
 
 
+def test_tick_replaces_stale_session_id(
+    monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
+):
+    """A resume that fell back to a fresh session (stale id had no
+    transcript) gets a new SessionStart id; the tick must adopt it so the
+    next restore resumes the fresh session instead of the dead id."""
+    wt = tmp_path / "repo"
+    wt.mkdir()
+    windows.write_mapping(
+        windows.WindowMapping(
+            window_id="@1",
+            project="p",
+            branch=None,
+            host_worktree=wt,
+            pane_id="23",
+            claude_session_id="aaaaaaaa-0000-0000-0000-000000000000",
+            window_index=2,
+        )
+    )
+    _write_state_json(wt, "23", "idle")
+    sid_file = wt / ".local" / ".tmux-agents" / "session-23.id"
+    sid_file.write_text("bbbbbbbb-0000-0000-0000-000000000000\n")
+    _configure_live(monkeypatch, [tmux.Window(id="@1", index=2, name="p")])
+    state_tick.main([])
+    m = windows.read_mapping("@1")
+    assert m.claude_session_id == "bbbbbbbb-0000-0000-0000-000000000000"
+    assert m.agents[0].session_id == "bbbbbbbb-0000-0000-0000-000000000000"
+
+
 def test_tick_merges_window_index_into_mapping(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path
 ):
