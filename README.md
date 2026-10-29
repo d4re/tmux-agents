@@ -50,6 +50,10 @@ projects it resolves on the host (sandboxes mount the workspace at its host path
 `{resume_args}` expands to empty for a fresh agent and to a resume snippet (leading space
 included) when reviving a previous conversation — ` --resume <session_id>` for Claude,
 ` resume <session_id>` for Codex (Codex resumes via a subcommand, not a flag).
+When resuming, a launch written as `[VAR=val ...] [exec ]claude{resume_args}` is
+rewritten to `claude --resume <id> || exec claude`. If the session can't be resumed (it
+ended before its first message, so nothing was saved), the pane then starts a fresh one
+instead of dying, and that new session's id replaces the old one.
 
 `devcontainer = true` looks up the container by the `devcontainer.local_folder={repo}` label
 that VS Code's Dev Containers extension and the `devcontainer` CLI stamp on every container,

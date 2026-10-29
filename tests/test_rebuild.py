@@ -289,7 +289,7 @@ def test_worker_rebuilds_then_resumes_each_pane(monkeypatch, tmp_state_dir):
     assert rebuilt == [("cd /r && devcontainer up --workspace-folder .", True)]
     # Final respawns target the %-prefixed pane ids and inject --resume when present.
     final = io.respawns[-2:]
-    assert ("%23", "claude --resume sess-1") in final
+    assert ("%23", "claude --resume sess-1 || claude") in final
     assert ("%24", "claude") in final
     # Every pane ends in STARTING.
     assert io.states[-2:] == [("23", phase.STARTING), ("24", phase.STARTING)]
@@ -387,8 +387,8 @@ def test_worker_respawns_every_live_slot_kind_matched(monkeypatch, tmp_state_dir
 
     assert rc == 0
     final = io.respawns[-2:]
-    assert ("%23", "claude --resume s1") in final
-    assert ("%24", "codex resume s2") in final
+    assert ("%23", "claude --resume s1 || claude") in final
+    assert ("%24", "codex resume s2 || codex") in final
     assert io.states[-2:] == [("23", phase.STARTING), ("24", phase.STARTING)]
 
 
@@ -472,7 +472,7 @@ def test_worker_codex_hooks_failure_is_nonfatal(monkeypatch, tmp_state_dir):
 
     assert rc == 0
     final = io.respawns[-1:]
-    assert ("%23", "claude --resume sess-1") in final
+    assert ("%23", "claude --resume sess-1 || claude") in final
 
 
 # ---- CLI dispatch ----
@@ -608,7 +608,7 @@ def test_sandbox_worker_export_recreate_import_resumes(monkeypatch, tmp_state_di
 
     assert rc == 0
     assert calls.order == ["export", "recreate", "import", "hooks"]
-    assert ("%23", "claude --resume sess-1") in io.respawns
+    assert ("%23", "claude --resume sess-1 || claude") in io.respawns
     # Backup archive is deleted only after a successful import.
     assert not paths.sbx_rebuild_backup("sbxproj").exists()
 
