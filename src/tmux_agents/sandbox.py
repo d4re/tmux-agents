@@ -1,5 +1,5 @@
 """Docker Sandboxes (sbx) probes and primitives: `exec_capture`, atomic
-`deliver`, daemon/lifecycle management, and state export/import. Sole module
+`deliver`, daemon/lifecycle management, and sandbox composition. Sole module
 that shells out to `sbx` (the exec templates in config.py and
 agent-terminal's execvp aside). Unlike `container.ensure_up`, creation is
 race-free: a per-name lock around inspect -> create -> re-inspect.
@@ -12,14 +12,14 @@ passes sbx's own stderr through."""
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import re
 import shlex
 import subprocess
 import time
-from pathlib import PurePosixPath
+from importlib import resources
+from pathlib import Path, PurePosixPath
 
 from tmux_agents import locks, paths
 from tmux_agents.config import Project
@@ -294,20 +294,40 @@ def is_present(name: str) -> bool:
     return name in (r.stdout or "").splitlines()
 
 
+# Both agents come from Docker's published mixins, pinned by tag so a
+# rebuild never silently changes agent versions. Bump deliberately (tags:
+# `hub.docker.com/r/sbx/{claude,codex}-mixin/tags`). Each mixin carries its
+# agent's proxy-managed credential (anthropic / openai OAuth bound on the
+# HOST via `sbx secret set`), so a fresh sandbox needs no in-VM login.
+CLAUDE_MIXIN = "sbx/claude-mixin:2.1.332"
+CODEX_MIXIN = "sbx/codex-mixin:0.171.0"
+
+
+def state_kit() -> Path:
+    """tmux-agents' own v3 mixin (package data): persistent volumes for the
+    agent state that must survive rm + create under the same name. sbx keys
+    volume storage on (sandbox name, path), not kit identity, so this path
+    moving across reinstalls doesn't orphan data."""
+    return Path(str(resources.files("tmux_agents") / "sbx_kits" / "state"))
+
+
+def create_argv(proj: Project) -> list[str]:
+    """`sbx create` argv (minus the binary): workload + both agent mixins +
+    the state kit + the project's own kits, then repo + extra workspaces."""
+    argv = ["create", "--name", proj.sandbox_name]
+    if proj.sbx_memory:
+        argv += ["-m", proj.sbx_memory]
+    for kit in (CLAUDE_MIXIN, CODEX_MIXIN, str(state_kit()), *proj.sbx_kits):
+        argv += ["--kit", kit]
+    argv += [proj.sbx_workload, str(proj.repo), *proj.sbx_mounts]
+    return argv
+
+
 def _create(proj: Project) -> None:
     """Run `sbx create` for the project. Caller MUST hold the project's
     `sbx_create_lock`."""
     name = proj.sandbox_name
-    argv = ["create", "--name", name]
-    if proj.sbx_template:
-        argv += ["-t", proj.sbx_template]
-    for kit in proj.sbx_kits:
-        argv += ["--kit", kit]
-    if proj.sbx_memory:
-        argv += ["-m", proj.sbx_memory]
-    # Agent positional is always `claude` — the dual-agent architecture
-    # runs codex INSIDE the claude sandbox (see docs/SANDBOX-MODE.md).
-    argv += ["claude", str(proj.repo), *proj.sbx_mounts]
+    argv = create_argv(proj)
     logger.info("creating sandbox %r: sbx %s", name, " ".join(argv))
     _check(_run(argv, timeout=CREATE_TIMEOUT), f"create {name!r}")
     if not is_present(name):
@@ -316,10 +336,11 @@ def _create(proj: Project) -> None:
 
 def ensure_up(proj: Project) -> bool:
     """Create the project's sandbox if it doesn't exist. Returns True iff
-    it was created — a fresh VM means logins and session files are gone,
-    which callers must react to (clear stale --resume ids; codex needs
-    re-login). Per-name lock around inspect -> create -> re-inspect, so the
-    check-then-create race container.ensure_up has is not copied here."""
+    it was created. A fresh VM keeps sessions (state-kit volumes reattach
+    by name) and logins (proxy-managed), but loses everything else in the
+    home dir — callers re-provision codex hooks + gh auth. Per-name lock
+    around inspect -> create -> re-inspect, so the check-then-create race
+    container.ensure_up has is not copied here."""
     with locks.locked(paths.sbx_create_lock(proj.sandbox_name)):
         if is_present(proj.sandbox_name):
             return False
@@ -330,8 +351,10 @@ def ensure_up(proj: Project) -> bool:
 def recreate(proj: Project) -> None:
     """rm + create as ONE critical section under the per-name lock —
     rebuild's recreate must not let a concurrent `ensure_up` (agent-new,
-    restore) slip a create between the removal and the new create, or the
-    subsequent state import would land in the other caller's sandbox."""
+    restore) slip its own create between the removal and rebuild's create
+    (the second create would then fail on the taken name, failing the
+    rebuild after the old sandbox is already gone). Agent state needs no carrying: `sbx rm` retains the
+    state-kit volumes and the same-name create reattaches them."""
     name = proj.sandbox_name
     with locks.locked(paths.sbx_create_lock(name)):
         if is_present(name):
@@ -348,65 +371,3 @@ def _rm(name: str) -> None:
 
 def remove(name: str) -> None:
     _rm(name)
-
-
-# What rebuild carries across a recreate. Principle: only what cannot be
-# recreated — sessions, history, memory, the codex login. ~/.claude/skills
-# is the SHARED sbx skills store mount and must never be tarred;
-# ~/.claude/settings.json and codex config.toml are kit-regenerated (an old
-# config.toml would clobber a new template/kit's config, so it stays out).
-# codex auth.json IS carried: a one-time transfer whose source is destroyed
-# with the sandbox keeps the token lineage single (codex rotates refresh
-# tokens — two live copies invalidate each other, but this isn't a copy).
-_EXPORT_CANDIDATES = ".claude .codex/auth.json .codex/sessions .codex/history.jsonl"
-# Staged through a temp file, NOT `tar | base64` piped: sh has no pipefail,
-# so a tar that dies partway (agent still writing ~/.claude, unreadable
-# file) would exit 0 through base64 with a silently TRUNCATED archive — and
-# rebuild would then delete the sandbox believing the state was saved. The
-# `&&` chain makes tar's own exit status gate the base64. Any nonzero tar
-# rc (including GNU tar's 1 = "file changed as we read it") aborts.
-_EXPORT_SCRIPT = (
-    'cd "$HOME" && t=$(mktemp) && { '
-    f"for p in {_EXPORT_CANDIDATES}; do "
-    '[ -e "$p" ] && printf "%s\\n" "$p"; done; } | '
-    "tar -cf \"$t\" --exclude='.claude/skills' --exclude='.claude/settings.json' "
-    '-T - && base64 < "$t" && rm -f "$t"'
-)
-
-
-def export_state(name: str) -> bytes:
-    """Tar of the irreplaceable agent state inside sandbox `name`, base64'd
-    through the text exec channel. Raises SandboxError on any failure —
-    callers must NOT delete a sandbox whose state couldn't be saved.
-    (If session dirs ever grow to hundreds of MB, `sbx cp` — copy-out
-    escape fixed in 0.38 — is the escape hatch from in-memory base64.)"""
-    out = exec_capture(name, _EXPORT_SCRIPT, timeout=CREATE_TIMEOUT)
-    return base64.b64decode(out)
-
-
-def import_state(name: str, blob: bytes) -> None:
-    exec_capture(
-        name,
-        'cd "$HOME" && base64 -d | tar -xf -',
-        stdin=base64.b64encode(blob).decode(),
-        timeout=CREATE_TIMEOUT,
-    )
-
-
-# Shown in a held pane when a codex slot lands in a FRESH sandbox (created,
-# recreated by restore, or rebuilt without state) — launching codex into an
-# auth error loop helps nobody. Shared by agent-rebuild and agent-restore.
-CODEX_LOGIN_RUNBOOK = """
-  codex login required — this sandbox is fresh (no codex login yet).
-
-  codex's login server binds to the VM's loopback, which sbx port
-  publishing can't reach — bridge it with an SSH tunnel instead
-  (prereq once per host: sbx setup ssh):
-
-    host terminal (keep running):  ssh -N -L 1455:127.0.0.1:1455 {name}.sbx
-    sandbox shell (Ctrl-Space t):  codex login
-                                   # open the printed URL in the host browser
-    after the browser flow:        ctrl-c the tunnel — done.
-
-  Then re-run agent-restore (Ctrl-Space r) or restart this pane.
-"""

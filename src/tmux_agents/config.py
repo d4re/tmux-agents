@@ -43,6 +43,10 @@ _CONTAINER_BODY_WITH_FORWARD_TMPL = (
     "cd {{workdir}} && exec {exe}{{resume_args}}'"
 )
 _CONTAINER_BODY_NO_FORWARD_TMPL = "'cd {{workdir}} && exec {exe}{{resume_args}}'"
+# Stock sbx shell workload (Debian, docker engine, git/gh/uv) — agents come
+# from mixins, so every sandbox is "workload + claude + codex mixins".
+DEFAULT_SBX_WORKLOAD = "shell"
+
 # `sbx exec` auto-starts a stopped sandbox and forwards TMUX_PANE, so the
 # state pipeline works unchanged; only the daemon must already run. No SSH
 # pump/env: sbx forwards the host agent natively.
@@ -83,7 +87,10 @@ class Project:
     exec_cmd_explicit: bool = False
     codex_exec_cmd_explicit: bool = False
     sandbox: bool = False
-    sbx_template: str | None = None
+    # The sandbox's v3 workload kit: the stock `shell` (default) or a project
+    # workload kit (local dir / OCI ref) built on the sbx shell image. Both
+    # agents come from pinned mixins sandbox.py adds — never the workload.
+    sbx_workload: str = DEFAULT_SBX_WORKLOAD
     sbx_kits: tuple[str, ...] = ()
     # Canonical `path` / `path:ro` strings, `~` expanded, ready for
     # `sbx create` argv (extra host workspaces, absolute paths preserved
@@ -143,7 +150,7 @@ class Project:
         )
 
 
-_SBX_KEYS = ("sbx_template", "sbx_kits", "sbx_mounts", "sbx_memory")
+_SBX_KEYS = ("sbx_workload", "sbx_kits", "sbx_mounts", "sbx_memory")
 
 
 def _parse_sbx_mounts(name: str, raw: object) -> tuple[str, ...]:
@@ -223,9 +230,21 @@ def load(path: Path) -> dict[str, Project]:
                     raise ConfigError(
                         f"project {name!r}: {key!r} requires 'sandbox = true'"
                     )
-        sbx_template = entry.get("sbx_template")
-        if sbx_template is not None and not isinstance(sbx_template, str):
-            raise ConfigError(f"project {name!r}: 'sbx_template' must be a string")
+        if "sbx_template" in entry:
+            # sbx >= 0.51 composes v3 kits; a `-t` template image can't carry
+            # the agent mixins. Fail loudly rather than silently ignore it.
+            raise ConfigError(
+                f"project {name!r}: 'sbx_template' was removed — build the "
+                "image as a v3 workload kit and set 'sbx_workload' to it "
+                "(see docs/SANDBOX-MODE.md)"
+            )
+        sbx_workload = entry.get("sbx_workload", DEFAULT_SBX_WORKLOAD)
+        if not isinstance(sbx_workload, str) or not sbx_workload:
+            raise ConfigError(
+                f"project {name!r}: 'sbx_workload' must be a non-empty string"
+            )
+        if sbx_workload.startswith("~"):
+            sbx_workload = str(Path(sbx_workload).expanduser())
         sbx_kits_raw = entry.get("sbx_kits", [])
         if not isinstance(sbx_kits_raw, list) or not all(
             isinstance(k, str) for k in sbx_kits_raw
@@ -301,7 +320,7 @@ def load(path: Path) -> dict[str, Project]:
             exec_cmd_explicit=exec_cmd_explicit,
             codex_exec_cmd_explicit=codex_exec_cmd_explicit,
             sandbox=sandbox,
-            sbx_template=sbx_template,
+            sbx_workload=sbx_workload,
             sbx_kits=tuple(sbx_kits_raw),
             sbx_mounts=sbx_mounts,
             sbx_memory=sbx_memory,

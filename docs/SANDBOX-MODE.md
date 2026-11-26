@@ -8,13 +8,26 @@ verified live unless marked open. Companion state: the `[acg-sbx]` stanza in
 the user's projects.toml is the hand-rolled version of what this doc
 automates.
 
+> **2026-11 update — sbx >= 0.51 / v3 kits.** sbx 0.51 turned the built-in
+> agents into published v3 kits (`docker.io/sbx/<agent>`) and stopped
+> composing v1/v2 kits with them. Since then every sandbox is composed as
+> **workload + agent mixins + state kit + project kits** (see "Sandbox
+> composition" below). That change dissolved two pilot-era compromises:
+> Codex now gets a proxy-managed login exactly like Claude (via
+> `sbx/codex-mixin`), and rebuild no longer exports/imports agent state
+> (persistent `volume@1` storage, keyed by sandbox name, survives
+> `sbx rm`). Sections below are updated to that design; the pilot-era
+> reasoning is kept where it still explains a constraint.
+
 ## Why
 
 - **Credential posture**: the sbx host proxy injects Claude's credential
   into outbound requests; the agent can spend but never read it. In
   devcontainers today, Claude's OAuth token sits readable in the
-  claude-config volume. (Codex is the deliberate exception — see below —
-  until sbx supports multiple agent OAuth bindings per sandbox.)
+  claude-config volume. Since sbx 0.51 the same holds for Codex:
+  `sbx/codex-mixin` declares the OpenAI credential (API key or ChatGPT
+  OAuth, `sbx secret set openai --oauth` on the host), so the VM only ever
+  sees `oai-*-proxy-managed` placeholders.
 - **Per-project isolation**: each sandbox is its own microVM (own kernel,
   own Docker daemon). A devcontainer escape lands in the one shared Docker
   Desktop/colima VM that holds every project's containers and host mounts.
@@ -65,8 +78,8 @@ forwards the host agent natively, and the Docker SSH pump must never spawn.
 repo         = "/Users/me/dev/Chatbot/aiop-compliance-gateway-service"
 sandbox      = true
 # All optional:
-sbx_template = "acg-sbx-template:0.3"      # default: stock claude template; avoid :latest
-sbx_kits     = ["https://github.com/rmabon/dotfiles"]  # ordered; dirs, ZIPs, OCI refs, git URLs
+sbx_workload = "shell"                     # default; or a v3 workload kit ref
+sbx_kits     = ["git+https://github.com/rmabon/dotfiles.git#ref=master"]  # v3 mixins: dirs, ZIPs, OCI refs, git URLs
 sbx_mounts   = ["~/.kube:ro", "~/.databricks"]         # extra workspaces, ":ro" honored
 sbx_memory   = "8g"                        # passed as `-m`; sbx default is 50% of host RAM
 ```
@@ -80,6 +93,9 @@ Validation rules:
   `container_workdir`, and `up_cmd` (hard errors, same pattern as the
   existing container/devcontainer check).
 - `sbx_*` keys without `sandbox = true` are errors.
+- `sbx_template` (pilot era: a `-t` image replacing the built-in claude
+  template) is rejected with a migration hint: a `-t` image can't carry the
+  v3 agent mixins. Project tooling goes into a v3 kit recipe instead.
 - `sbx_mounts`: expand `~` in Python (subprocess argv gets no shell
   expansion), canonicalize, reject duplicates and non-existent paths,
   parse the `:ro` suffix. **Documentation recommends `:ro` wherever the
@@ -148,9 +164,8 @@ check-then-create race that this module must not copy.
 - `ensure_up(project)` — per-sandbox-name lock around
   inspect → create → re-inspect (second existence check after acquiring the
   lock). Creation:
-  `sbx create --name {sbx_name} [-t {sbx_template}] [--kit …]…
-  [-m {sbx_memory}] claude {repo} {sbx_mounts…}`. Agent positional is
-  always `claude` (see Codex section).
+  `create_argv` (see Sandbox composition: workload + pinned agent mixins
+  + state kit + project kits, then repo + `sbx_mounts`).
 - `status(name)` — `sbx ls --json` status (`running`/`stopped`/…, None
   when absent).
 - `reap_pane_agents(name, pane_ids)` — `agent-kill`'s guest-side cleanup.
@@ -193,57 +208,49 @@ documented as "run `agent-rebuild`" — which the state-preserving rebuild
 makes cheap. Inspect/fingerprint drift detection is a possible v2 nicety,
 not v1 machinery.
 
-## Codex in the same sandbox (single-VM dual agent)
+## Sandbox composition (sbx >= 0.51)
 
-Settled architecture after testing every alternative:
+`sandbox.create_argv` builds every sandbox the same way:
 
-| Option | Verdict |
-|---|---|
-| Mixin kit declaring openai OAuth | Hard-rejected: "oauth credential … only allowed on agent kits" |
-| Custom agent kit `extends: claude` + openai OAuth | **Trap**: validates and creates, then silently breaks BOTH injections (only built-in kits pass provenance authorization; see upstream #344 for the confirmed sibling bug) |
-| Second codex sandbox per project | Works (verified) but doubles VMs/compose stacks and breaks claude→codex interop — rejected |
-| Clone host `~/.codex/auth.json` and keep using both | **Never**: codex rotates the refresh token on rewrite; two live copies of one lineage invalidate each other. (A one-time transfer where the host copy is retired is viable — but then in-sandbox login is simpler anyway) |
-| **In-sandbox `codex login` (chosen)** | Sandbox-local, independent token lineage, revocable. Login transport below |
+```
+sbx create --name <project> [-m <sbx_memory>] \
+  --kit sbx/claude-mixin:<pinned> --kit sbx/codex-mixin:<pinned> \
+  --kit <tmux-agents state kit> --kit <sbx_kits…> \
+  <sbx_workload> <repo> <sbx_mounts…>
+```
 
-Login transport, in preference order:
+- **Workload** (`sbx_workload`, default `shell`): Docker's Debian 13 shell
+  workload (docker engine, git, gh, uv, python, socat for the ssh-agent
+  forwarder). Exactly one per composition. A project that needs a heavier
+  base can point this at its own v3 workload kit, but the three migrated
+  projects all fit in a *mixin* on `shell` (kubectl, node, mark, d2,
+  databricks CLI … baked by the mixin's `spec.dockerfile` recipe).
+- **Agent mixins**, pinned by tag in `sandbox.CLAUDE_MIXIN` /
+  `sandbox.CODEX_MIXIN` so a rebuild never silently changes agent
+  versions. Each declares its agent's `credential@1` (proxy-managed API key
+  or OAuth, sentinels in the VM) and network allows. Don't put
+  `sbx/claude-mixin` on the `claude` workload — two providers of `claude`
+  fail composition.
+- **State kit** (`sbx_kits/state/spec.yaml`, package data): persistent
+  volumes for agent state, see Rebuild semantics.
+- **Project kits** (`sbx_kits`): v3 mixins only. Ordering between kits is
+  the dependency graph, never flag order — a kit whose hooks must run
+  after an agent mixin's (the dotfiles kit editing codex's `config.toml`)
+  declares `integrates: ["claude", "codex"]`.
 
-1. `codex login --device-auth` — no ports, no bridge. Requires device-code
-   auth enabled in ChatGPT personal/workspace settings; **currently
-   disabled for this user's Enterprise workspace**, hence path 2 exists.
-   Worth requesting from the workspace admin — it also removes the port
-   machinery for every colleague.
-2. Standard `codex login` with the localhost callback bridged via SSH:
-   `ssh -N -L 1455:127.0.0.1:1455 {name}.sbx` (prereq: `sbx setup ssh`),
-   login in a pane, ctrl-c the tunnel after. `ssh -L` originates the
-   connection inside the VM, so it reaches codex's loopback-bound login
-   server — `sbx ports --publish` cannot (connection reset; the publish
-   path doesn't reach loopback-bound in-VM services). Works for every
-   subscription tier. The fixed host port collides if two sandboxes log
-   in simultaneously, so treat it as a scoped, temporary bridge.
+Pilot-era history (0.38–0.49, still why some rules exist): a mixin could
+not declare OAuth ("only allowed on agent kits"), a custom agent kit
+extending `claude` silently broke both injections (#344 family), and a
+second codex sandbox per project doubled VMs — so codex logged in *inside*
+the claude sandbox (`codex login` over an `ssh -L 1455` tunnel) and its
+token lived in the VM. Docker's own published `codex-mixin` (provenance-
+authorized) removed all of that; never reintroduce an in-VM codex login.
 
-Consequences the implementation must own:
-
-- **Codex hook provisioning**: `codex_hooks.ensure_sandbox(name)` — twin of
-  `ensure_container` with the SAME guarantees (home discovery via
-  `exec_capture`, foreign-hook-preserving merge, digest comparison, atomic
-  delivery), wired into `agent-new`, `agent-other`, **and restore/rebuild**
-  (rebuild deletes the installed hooks by construction).
-- **Codex login state is per-sandbox and lost on `sbx rm`** (see Rebuild).
-- The codex token is readable inside the VM (egress-limited) — codex's
-  devcontainer status quo, accepted; claude stays fully proxy-managed.
-
-### Experimental, unsupported: mounting the host `~/.codex`
-
-`sbx_mounts = ["~/.codex"]` shares one token lineage (no divergent-copy
-invalidation) and gives configure-once ergonomics — but concurrent refresh
-from host-codex and sandbox-codex is a read-modify-write race on one file;
-a lost race forces re-login, and atomic file replacement does not serialize
-two already-running clients. Further wrinkles: the host may keep tokens in
-the OS keyring (auth.json absent or stale), shared `config.toml` may select
-keyring storage the VM lacks, and all codex history/config becomes
-VM-visible. **Contract if used anyway: exclusive use — host codex must not
-run while a sandbox uses the shared store.** Not the default, not
-supported, documented only so nobody rediscovers it as a "simple" idea.
+Codex hook provisioning is unchanged: `codex_hooks.ensure_sandbox(name)`
+(home discovery via `exec_capture`, foreign-hook-preserving merge, digest
+comparison, atomic delivery) runs in `agent-new`, `agent-other`, restore
+and rebuild. It writes `~/.codex/hooks.json`; the mixin owns
+`config.toml`.
 
 ## Session restore integration
 
@@ -251,69 +258,64 @@ Restore must handle a sandbox that is **gone**, not merely stopped —
 `sbx exec` auto-start does not cover deletion. Per project group, the
 worker runs: `ensure_daemon` (once, before the parallel wave) →
 `ensure_up` → `codex_hooks.ensure_sandbox` → pane respawns. A sandbox
-deleted outside tmux-agents is thereby recreated (fresh, needing logins —
-panes show the standard errored-placeholder with the runbook hint).
-Sandbox absence is **never** a reason to forget window mappings; mappings
-outlive sandboxes exactly as they outlive containers.
-
-- `--resume {session_id}` works through `{resume_args}` (verified
-  substitution end-to-end) — but only for sandboxes that still hold the
-  session files; after recreation the tick's stale session ids must be
-  cleared rather than passed to `claude --resume` (which would error).
-- Open item: Claude session survival across host reboot (VM state on disk)
-  is assumed but not yet verified.
+deleted outside tmux-agents is thereby recreated — and because the state
+kit's volumes outlive `sbx rm` and logins are host-side, every slot
+resumes with its saved `--resume` id as if nothing happened. Sandbox
+absence is **never** a reason to forget window mappings; mappings outlive
+sandboxes exactly as they outlive containers.
 
 ## Rebuild semantics
 
 ### When rebuild is even called
 
 Recreation is needed only when a **create-time input** changes, because sbx
-fixes those at creation: the template (project toolchain update — the main
-recurring trigger), `sbx_mounts`, `sbx_memory`, kit list/content where it
-matters at create-time, newly added **global** secrets (bindings are fixed
-at creation; a secret added later never reaches existing sandboxes —
+fixes those at creation: the workload or a kit's content (project
+toolchain update — the main recurring trigger), the pinned agent mixins,
+`sbx_mounts`, `sbx_memory`, newly added **global** secrets (bindings are
+fixed at creation; a secret added later never reaches existing sandboxes —
 upstream #477 makes even sandbox-scoped updates unreliable), and the
-occasional corrupted-sandbox reset or sbx upgrade that demands it. In
-steady state this is rare (the pilot needed six recreations on day one and
-none since the template stabilized) — but "rare" is not "never", so
-rebuild must not cost conversation history.
+occasional corrupted-sandbox reset or sbx upgrade that demands it.
 
-### State-preserving recreate
+### Agent state on persistent volumes
 
-Agent state lives in the sandbox home only because sbx offers nowhere
-better (it deliberately ignores host `~/.claude`, upstream #113; and
-redirecting via `CLAUDE_CONFIG_DIR` onto a mounted host dir is blocked by
-upstream #67 — credential injection ignores custom config dirs). So
-rebuild carries the state across explicitly:
+`volume@1` block storage is keyed on (owner, **sandbox name**, path) — not
+on any kit's identity. `sbx rm` retains it; a create under the same name
+reattaches every still-declared path, whatever the rest of the
+composition looks like. So `agent-rebuild` is just `sandbox.recreate`
+(rm → create in one locked critical section) + codex hooks + gh auth +
+respawn with the saved resume ids. Nothing is exported, nothing can be
+half-imported, and there is no destructive fallback mode.
 
-1. **Export** before `sbx rm`. Principle: the export carries only what
-   cannot be recreated — sessions, history, memory, the codex login.
-   Anything easily recoverable stays out (VS Code server: reinstalls on
-   next attach; caches, venvs: rebuilt by tooling) so the export stays
-   small and the tar list stays auditable. Concretely, via
-   `sandbox.exec_capture` (or `sbx cp`, whose copy-out escape was fixed in
-   0.38): `~/.claude` **excluding** `~/.claude/skills` (that's the shared
-   store mount — must never be tarred) and minus kit-regenerated files
-   (`settings.json`, `.claude.json`); `~/.codex` sessions/history **plus
-   `auth.json`** — a one-time transfer whose source is destroyed with the
-   sandbox is lineage-safe (this is exactly the "copy is fine if the
-   source is retired" case), so the codex login survives; codex
-   `config.toml` is NOT restored (kits regenerate it — restoring an old
-   copy would clobber a new template/kit's config).
-2. `sbx rm --force` + `ensure_up` (new template/mounts/memory take
-   effect).
-3. **Import** the tar back, re-provision codex hooks, respawn panes. Saved
-   `--resume` ids stay valid because the session files came along.
+The state kit declares one volume per piece of irreplaceable state:
 
-Failure containment: if the export fails, abort the rebuild (never delete
-what couldn't be saved) unless the user passes an explicit
-`--discard-state`. If the import fails, the sandbox is fresh-but-working:
-clear stale session ids and hold codex panes on a "login required"
-placeholder — the destructive-reset behavior, now the fallback rather than
-the design.
+| Path | Why |
+|---|---|
+| `~/.claude/projects` | sessions (`--resume`) + auto-memory |
+| `~/.claude/file-history`, `todos`, `plans` | resume context |
+| `/tmp/claude-1000` | per-session scratchpads (lost on every recreate before) |
+| `~/.codex/sessions` | codex sessions (`codex resume`) |
+| `~/.local/state/tmux-agents` | `~/.claude/history.jsonl` + `~/.codex/history.jsonl`, symlinked into place by a startup hook (volumes are directories) |
 
-External deletion (`sbx rm` outside tmux-agents) still loses state — out
-of scope; restore recreates fresh in that case.
+Deliberately not on a volume: `~/.claude/skills` (sbx's shared skills
+mount; sbx rejects volumes that would hide it — which is also why
+`~/.claude` can't be one volume), kit-regenerated config
+(`settings.json`, `.claude.json`, codex `config.toml`), codex `auth.json`
+(a proxy placeholder now), the gh login (synced from the host).
+
+Rules:
+
+- **Never change `size`/`mode`/`tmpfs` of an existing entry.** sbx
+  compares a retained volume's config on every create and refuses the
+  operation on any difference (no implicit resize). Adding a *new* path is
+  fine (fresh storage). Ownership is fixed in a root startup hook instead
+  of `mode`, because a fresh mount may come up root-owned.
+- Project kits use the same mechanism for their own per-sandbox
+  credentials caches (`~/.databricks` token cache, `~/.kube` ServiceAccount
+  kubeconfig).
+- Volumes outlive the sandbox *name*'s use: removing a project for good
+  should also remove its retained storage (`sbx df -v` lists it).
+- The in-VM docker store (`dockerd@1`) is NOT a volume — it ends with the
+  sandbox, so compose deps stacks are brought up again after a rebuild.
 
 ## agent-vscode
 
@@ -363,30 +365,36 @@ hostnames (`{name}.sbx`); `agent-vscode` runs
    the error taxonomy whenever it lapses).
 3. `sbx daemon start -d --policy balanced`.
 4. Secrets: `gh auth token | sbx secret set github` (required for private
-   kit repos), `/login` inside the first claude pane (stores the anthropic
-   OAuth host-side), per-sandbox codex login as above.
+   kit repos), `sbx secret set anthropic --oauth` (or `/login` inside the
+   first claude pane — stores the anthropic OAuth host-side), and
+   `sbx secret set openai --oauth` (ChatGPT OAuth for the codex mixin,
+   browser flow on the host). No per-sandbox logins.
 5. `sbx skills import` to seed the shared skills store (mounted rw at
    `~/.claude/skills` in every sandbox — install scripts must never
    replace/back up entries there, only add; the dotfiles repo handles this).
 
-## Custom templates (per-project images)
+## Project tooling: v3 kit recipes, not template images
 
-Requirements discovered the hard way (all load-bearing, none documented
-upstream):
+Pilot-era projects shipped a custom `-t` template image (user `agent`,
+docker engine, `com.docker.sandboxes.*` labels, trixie base, claude and
+codex baked in). With v3 that whole layer is gone: the `shell` workload
+already satisfies the runtime's conventions (`sbx@1`), the agents come
+from the mixins, and project tools go into the project mixin's recipe:
 
-- User must be named `agent`, uid 1000, groups `sudo` + `docker`;
-  `~/.claude` pre-created agent-owned; default `USER agent`.
-- Docker Engine must be in the image (the in-sandbox daemon is
-  template-provided), and the OCI labels
-  `com.docker.sandboxes.start-docker="true"` +
-  `com.docker.sandboxes.flavor` are what make the runtime start it
-  privileged — without them dockerd dies with nftables EPERM.
-- Base must be trixie-or-newer: bookworm's iptables 1.8.9 fails against the
-  nerdbox kernel (nftables-only, no legacy xtables).
-- Flow: `docker build` on host → `docker save` → `sbx template load <tar>`
-  → reference by a **versioned tag** in `sbx_template` (`:latest` defeats
-  the drift detection above). Reference Dockerfile:
-  `aiop-compliance-gateway-service/.devcontainer/sbx/Dockerfile`.
+- `spec.yaml` (`# syntax=docker/sandbox-kit:3`, `kind: mixin`) declares
+  capabilities: `network-policy@1` (install/runtime allow lists),
+  `volume@1`, `lifecycle@1` (install hooks once at create — root unless
+  `user:` says otherwise; startup hooks every boot; `files`).
+- `spec.dockerfile` (same stem) is the recipe: fetch + checksum-verify
+  binaries in a build stage, then `FROM scratch` + `COPY` into the
+  overlay; `ENV` for environment variables (v3 has no `environment`
+  block).
+- Reference kits: `.devcontainer/sbx/kit/` in aiop-compliance-gateway,
+  ai-product-enrichment and packalyzer-decision-model; personal dotfiles
+  kit in `rmabon/dotfiles` (`spec.yaml` + `spec.dockerfile`).
+- Validate locally with `docker buildx build <kit> -f <kit>/spec.yaml`
+  (the `docker/sandbox-kit:3` frontend parses the descriptor) or
+  `sbx kit validate <kit>` against a running daemon.
 
 ## Known upstream issues that shape this design
 
@@ -405,8 +413,9 @@ upstream):
   answer).
 - **#506** — 0.39 reportedly enables cross-sandbox agent communication by
   default; review before upgrading past 0.38.
-- Kits and SSH are experimental; the kit schema (v2) is weeks old. Pin the
-  sbx version in the docs and treat upgrades as events.
+- Kits and SSH are experimental. Pin the sbx version in the docs and treat
+  upgrades as events: 0.51 broke every v2 kit (v3 only with the published
+  agent kits), 0.54 needs `sbx setup ssh` re-run.
 - **Stale workspace entries** (observed on v0.42.0; **gone in v0.49.2**, re-tested 2026-10-23).
   sbx serves the workspace through its own virtiofs server (sailor), not
   Apple's. If anything in the guest looks a path up before the host creates
@@ -425,8 +434,10 @@ upstream):
   cheap tripwire for older installs or a regression.
 - **`sbx ls --json` shape changed in 0.49**: a bare list instead of
   `{"sandboxes": [...]}`. `sandbox.status` accepts both.
-- Unfiled (ours to file): multiple built-in agent kits' OAuth bindings per
-  sandbox; the silent-breakage bug distilled from the #344 family.
+- Multiple agents' OAuth bindings per sandbox: solved upstream by the
+  published `sbx/claude-mixin` + `sbx/codex-mixin` (docker/sbx-releases#823).
+- **#791** (open) — sandbox DNS answers SERVFAIL for SRV/TXT; the reason
+  this setup tracks 0.55 release candidates.
 
 ## Implementation order
 
@@ -463,13 +474,13 @@ Deferred from v1: drift detection (container-mode parity instead),
 
 ## Out of scope
 
-- Automating `sbx login` / codex login / secret creation (interactive by
-  nature; surface clear errors instead).
+- Automating `sbx login` / `sbx secret set` (interactive by nature;
+  surface clear errors instead).
 - Kit authoring/management (kits are referenced, not generated —
   the dotfiles kit lives in the dotfiles repo).
 - The devcontainer modes: unchanged, remain the default.
 
-## Review notes (2026-08-26)
+## Review notes (2026-08-26, pilot era — superseded where the 2026-11 update says so)
 
 Codex review (12 ranked findings) incorporated throughout: restore
 recreates deleted sandboxes; backend enum instead of an `is_container`

@@ -585,14 +585,14 @@ def test_sbx_keys_parsed(tmp_path):
         _sandbox_toml(
             tmp_path,
             extra=(
-                'sbx_template = "acg-sbx-template:0.3"\n'
+                'sbx_workload = "/kits/acg-workload"\n'
                 'sbx_kits = ["https://github.com/rmabon/dotfiles"]\n'
                 f'sbx_mounts = ["{mount}:ro"]\n'
                 'sbx_memory = "8g"\n'
             ),
         )
     )["sbxproj"]
-    assert p.sbx_template == "acg-sbx-template:0.3"
+    assert p.sbx_workload == "/kits/acg-workload"
     assert p.sbx_kits == ("https://github.com/rmabon/dotfiles",)
     assert p.sbx_mounts == (f"{mount}:ro",)
     assert p.sbx_memory == "8g"
@@ -600,7 +600,7 @@ def test_sbx_keys_parsed(tmp_path):
 
 def test_sbx_defaults_when_absent(tmp_path):
     p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
-    assert p.sbx_template is None
+    assert p.sbx_workload == "shell"
     assert p.sbx_kits == ()
     assert p.sbx_mounts == ()
     assert p.sbx_memory is None
@@ -609,7 +609,7 @@ def test_sbx_defaults_when_absent(tmp_path):
 @pytest.mark.parametrize(
     "key_line",
     [
-        'sbx_template = "t:1"',
+        'sbx_workload = "w"',
         'sbx_kits = ["k"]',
         'sbx_mounts = ["/tmp"]',
         'sbx_memory = "8g"',
@@ -623,10 +623,24 @@ def test_sbx_keys_require_sandbox(tmp_path, key_line):
         config.load(path)
 
 
+def test_sbx_template_rejected_with_migration_hint(tmp_path):
+    """sbx >= 0.51 composes v3 kits; a `-t` image can't carry the agent
+    mixins, so the old key fails loudly instead of being ignored."""
+    with pytest.raises(config.ConfigError, match="'sbx_template' was removed"):
+        config.load(_sandbox_toml(tmp_path, extra='sbx_template = "t:1"\n'))
+
+
+def test_sbx_workload_expands_tilde(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = config.load(_sandbox_toml(tmp_path, extra='sbx_workload = "~/kits/w"\n'))
+    assert p["sbxproj"].sbx_workload == f"{tmp_path}/kits/w"
+
+
 @pytest.mark.parametrize(
     "key_line, match",
     [
-        ("sbx_template = 3", "'sbx_template' must be a string"),
+        ("sbx_workload = 3", "'sbx_workload' must be a non-empty string"),
+        ('sbx_workload = ""', "'sbx_workload' must be a non-empty string"),
         ('sbx_kits = "k"', "'sbx_kits' must be a list of strings"),
         ("sbx_kits = [1]", "'sbx_kits' must be a list of strings"),
         ('sbx_mounts = "x"', "'sbx_mounts' must be a list of strings"),

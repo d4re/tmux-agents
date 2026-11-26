@@ -51,6 +51,7 @@ tmux_agents = [
     "_ssh_framing.py",
     "_ssh_relay_script.py",
     "_ssh_pump_script.py",
+    "sbx_kits/state/spec.yaml",
 ]
 
 [tool.pytest.ini_options]
