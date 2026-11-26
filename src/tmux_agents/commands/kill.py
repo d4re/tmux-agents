@@ -1,10 +1,14 @@
 """Thin orchestrator for `agent-kill`: window picker, optional
-`git worktree remove` with interactive force-retry on dirty."""
+`git worktree remove`. Interactively, the prune/force questions are asked
+in the popup, then the window is killed and the removal itself runs in a
+detached worker (`--finish-removal`, tracked in `tmux_agents.removals`)."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
+import shlex
 import sys
 
 from tmux_agents import (
@@ -13,7 +17,9 @@ from tmux_agents import (
     logging_setup,
     paths,
     pickers,
+    removals,
     sandbox,
+    startup,
     tmux,
     worktree,
 )
@@ -29,6 +35,18 @@ def _parser() -> argparse.ArgumentParser:
         "--window-id", default=None, help="tmux window id (e.g. '@5'); skips the picker"
     )
     p.add_argument("--prune-worktree", action="store_true")
+    p.add_argument(
+        "--finish-removal",
+        metavar="KEY",
+        default=None,
+        help=argparse.SUPPRESS,  # internal: background worktree-removal worker
+    )
+    p.add_argument(
+        "--show-removal",
+        metavar="KEY",
+        default=None,
+        help=argparse.SUPPRESS,  # internal: overview details popup
+    )
     p.add_argument(
         "--force",
         action="store_true",
@@ -102,22 +120,34 @@ def _prune(win: tmux.Window, *, force: bool) -> int:
     return 0
 
 
-def _interactive_prune(win: tmux.Window) -> int:
-    """Remove the worktree, prompting for force on dirty. 0 = caller should kill."""
+def _plan_removal(win: tmux.Window) -> removals.Removal | None | bool:
+    """Ask the prune questions up front, while the popup is still open.
+
+    Returns the removal to queue in the background, None to kill without
+    removing anything, or False to keep the window (container failure, or
+    the user declined to force-remove uncommitted changes)."""
     target = _resolve_prune_target(win)
     if target is None:
-        return 0
+        return None
     if target is False:
-        return 1
+        return False
     proj, branch, kw = target
-    # The fzf prompts leave the popup blank, and removal through a container
-    # bind mount can take many seconds — announce it so it doesn't look hung.
-    print(f"removing worktree {branch}… (large worktrees can take a while)", flush=True)
-    try:
-        worktree.remove(proj.repo, branch, force=False, **kw)
-        print("worktree removed", flush=True)
-        return 0
-    except worktree.NotAWorktreeError:
+
+    def plan(*, force: bool = False, leftover: bool = False) -> removals.Removal:
+        return removals.Removal(
+            key=removals.new_key(win.id),
+            name=win.name,
+            project=proj.name,
+            branch=branch,
+            repo=str(proj.repo),
+            force=force,
+            leftover=leftover,
+            container=kw.get("container"),
+            container_workdir=kw.get("container_workdir"),
+            container_user=kw.get("container_user"),
+        )
+
+    if worktree.is_husk(proj.repo, branch):
         # Husk dir: exists on disk but git doesn't know it (no .git entry).
         # Without this branch the kill wedged forever — git refuses the
         # remove, and the window (plus its restore mapping) survived.
@@ -129,26 +159,38 @@ def _interactive_prune(win: tmux.Window) -> int:
                 "(no .git — leftover files only; either way the agent is killed)"
             ),
         ):
-            worktree.remove_leftover(proj.repo, branch)
-            print("folder removed", flush=True)
-        return 0
-    except worktree.DirtyWorktreeError:
-        if not pickers.prompt_yes_no(
-            f"{win.name}: worktree has uncommitted changes; force remove? > ",
-            default=False,
-        ):
-            return 1
-        print(f"force removing worktree {branch}…", flush=True)
-        try:
-            worktree.remove(proj.repo, branch, force=True, **kw)
-            print("worktree removed", flush=True)
-            return 0
-        except worktree.WorktreeError as e:
-            logging_setup.cli_error(logger, str(e))
-            return 1
+            return plan(leftover=True)
+        return None
+
+    # The fzf prompts leave the popup blank — say what we're waiting on.
+    print(f"checking {branch} for uncommitted changes…", flush=True)
+    try:
+        dirty = worktree.is_dirty(proj.repo, branch, **kw)
     except worktree.WorktreeError as e:
-        logging_setup.cli_error(logger, str(e))
-        return 1
+        # Can't tell up front; let the background removal surface the error.
+        logger.warning("%s: dirty check failed: %s", win.id, e)
+        dirty = False
+    if not dirty:
+        return plan()
+    if not pickers.prompt_yes_no(
+        f"{win.name}: worktree has uncommitted changes; force remove? > ",
+        default=False,
+    ):
+        return False
+    return plan(force=True)
+
+
+def _queue_removal(r: removals.Removal) -> None:
+    """Record the removal and start its detached worker. Must go through
+    `run-shell -b`: tmux tears down the popup's process tree on close, so a
+    Popen'd child would die with it (see agent-new's `_spawn_worker`)."""
+    removals.save(r)
+    try:
+        tmux.run_shell_bg(shlex.join(["agent-kill", "--finish-removal", r.key]))
+    except Exception as e:  # noqa: BLE001 — surface on the overview row instead
+        logger.error("could not start removal worker for %s: %s", r.name, e)
+        r.status, r.error = removals.FAILED, f"could not start removal worker: {e}"
+        removals.save(r)
 
 
 def _has_worktree(win: tmux.Window) -> bool:
@@ -196,22 +238,51 @@ def _reap_guest_agents(win: tmux.Window) -> None:
 
 
 def _kill_with_optional_prune(win: tmux.Window) -> int:
-    """Prompt for worktree pruning (only when a worktree exists) then kill."""
+    """Prompt for worktree pruning (only when a worktree exists), kill the
+    window, then remove the worktree in the background — the popup closes
+    right away and the overview shows the removal's progress/failure."""
+    planned = None
     if _has_worktree(win):
         try:
-            prune = pickers.prompt_yes_no(
+            if pickers.prompt_yes_no(
                 f"prune worktree for {win.name}? > ", default=True
-            )
+            ):
+                planned = _plan_removal(win)
         except (KeyboardInterrupt, pickers.Cancelled):
             return 0
-        if prune and _interactive_prune(win) != 0:
+        if planned is False:
             return 0
+    # Kill first so the agent can't keep writing into a folder being deleted.
     _reap_guest_agents(win)
     tmux.kill_window(win.id)
     tmux.kill_term_session(win.id)
     # Deliberate kill: drop the mapping now rather than leaving it to the
     # tick's grace-period GC, so the agent can't reappear in a restore prompt.
     windows_mod.forget(win.id)
+    if isinstance(planned, removals.Removal):
+        _queue_removal(planned)
+    return 0
+
+
+def _show_removal(key: str) -> int:
+    """Details view for a failed background removal (overview ↵ on its row)."""
+    r = removals.get(key)
+    if r is None:
+        print("this removal already finished or was dismissed")
+    else:
+        print(f"{r.name}: worktree removal {r.status}\n")
+        print(f"  {r.path}\n")
+        if r.error:
+            print(r.error + "\n")
+        print(
+            "The agent itself is already stopped. Fix the cause and delete the\n"
+            "worktree by hand (e.g. `git worktree remove --force <path>`), then\n"
+            "press k on the row in the overview to dismiss it."
+        )
+    try:
+        input("\npress Enter to close")
+    except (EOFError, KeyboardInterrupt):
+        pass
     return 0
 
 
@@ -234,6 +305,19 @@ def _interactive() -> int:
 def main(argv: list[str] | None = None) -> int:
     logging_setup.setup_logging()
     args = _parser().parse_args(argv)
+
+    if args.finish_removal is not None:
+        # Same detach dance as `agent-rebuild --worker`: run-shell -b keeps
+        # the job's output pipe and tmux would paint any output over the
+        # active pane. Fork, drop the pipe, let the parent exit 0.
+        if os.fork() > 0:
+            return 0
+        os.setsid()
+        startup._detach_stdio()
+        return removals.run(args.finish_removal)
+
+    if args.show_removal is not None:
+        return _show_removal(args.show_removal)
 
     if args.force and not args.prune_worktree:
         logging_setup.cli_error(logger, "--force requires --prune-worktree")

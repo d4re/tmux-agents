@@ -14,7 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
 
-from tmux_agents import paths, phase, state, theme, tmux
+from tmux_agents import paths, phase, removals, state, theme, tmux
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,13 @@ class SlotState(NamedTuple):
 
 @dataclass
 class Row:
-    kind: Literal["header", "agent"]
+    kind: Literal["header", "agent", "removal"]
     repo: str
     count: int = 0  # header-only (live slot count for agent-kind rows in this repo)
     folded: bool = False  # header-only
     win: tmux.Window | None = None  # agent-only
     slots: list[SlotState] = field(default_factory=list)  # agent-only
+    removal: removals.Removal | None = None  # removal-only
 
     @property
     def combined(self) -> str:
@@ -59,12 +60,26 @@ class Row:
 
 
 def build_rows(
-    folds: dict[str, bool], *, windows: list[tmux.Window] | None = None
+    folds: dict[str, bool],
+    *,
+    windows: list[tmux.Window] | None = None,
+    pending: list[removals.Removal] | None = None,
 ) -> list[Row]:
+    """Header + agent rows per repo, then that repo's background worktree
+    removals (killed agents whose worktree is still being deleted, or whose
+    deletion failed). A repo with only removals left still gets a header."""
     if windows is None:
         windows = tmux.list_windows(tmux.SESSION)
+    if pending is None:
+        pending = removals.list_all()
+    by_repo: OrderedDict[str, list[removals.Removal]] = OrderedDict()
+    for r in pending:
+        by_repo.setdefault(r.project, []).append(r)
+    groups = group_by_repo(windows)
+    for repo in by_repo:
+        groups.setdefault(repo, [])
     rows: list[Row] = []
-    for repo, wins in group_by_repo(windows).items():
+    for repo, wins in groups.items():
         folded = bool(folds.get(repo, False))
         win_slots = [(w, parse_state_code(w.state_code)) for w in wins]
         total_slots = sum(len(slots) for _, slots in win_slots)
@@ -73,6 +88,8 @@ def build_rows(
             continue
         for w, slots in win_slots:
             rows.append(Row(kind="agent", repo=repo, win=w, slots=slots))
+        for r in by_repo.get(repo, []):
+            rows.append(Row(kind="removal", repo=repo, removal=r))
     return rows
 
 
@@ -217,14 +234,21 @@ def load_folds_with_gc(*, windows: list[tmux.Window] | None = None) -> dict[str,
 
 class Cursor(NamedTuple):
     """Identifies a row by its content (window_id for agents, repo name for
-    headers) so it survives row reorderings, additions, and removals."""
+    headers, record key for removals) so it survives row reorderings,
+    additions, and removals."""
 
-    kind: Literal["agent", "header"]
+    kind: Literal["agent", "header", "removal"]
     key: str
 
 
 def _row_key(r: Row) -> Cursor:
-    return Cursor(r.kind, r.win.id if r.kind == "agent" else r.repo)
+    if r.kind == "agent":
+        assert r.win is not None
+        return Cursor("agent", r.win.id)
+    if r.kind == "removal":
+        assert r.removal is not None
+        return Cursor("removal", r.removal.key)
+    return Cursor("header", r.repo)
 
 
 def first_cursor(rows: list[Row]) -> Cursor | None:
@@ -296,6 +320,8 @@ def activate_target(target: Cursor, folds: dict[str, bool]) -> Cursor:
     kind, key = target
     if kind == "agent":
         tmux.select_window(key)
+    elif kind == "removal":
+        show_removal(key)
     else:
         folds[key] = not folds.get(key, False)
         save_folds(folds)
@@ -389,9 +415,18 @@ def setup_curses_colors() -> None:
             pass  # too many pairs/colors; degrade gracefully
 
 
+def format_removal(r: removals.Removal) -> str:
+    if r.status == removals.FAILED:
+        return f"  ✕ {r.name}    worktree removal failed — ↵ details, k dismiss"
+    return f"  ✕ {r.name}    removing worktree…"
+
+
 def _row_text(r: Row) -> str:
     if r.kind == "header":
         return format_header(r)
+    if r.kind == "removal":
+        assert r.removal is not None
+        return format_removal(r.removal)
     assert r.win is not None
     return format_line_plain(r.win, r.slots, mark_active=False)
 
@@ -407,6 +442,13 @@ def _color_pair(n: int) -> int:
         return curses.color_pair(n)
     except curses.error:
         return 0
+
+
+def _removal_attr(r: Row) -> int:
+    assert r.removal is not None
+    if r.removal.status == removals.FAILED:
+        return _color_pair(_PAIR_INACTIVE[state.ERRORED]) | curses.A_BOLD
+    return curses.A_DIM
 
 
 def _agent_attr(r: Row) -> int:
@@ -460,14 +502,20 @@ def render_curses(stdscr, rows: list[Row], cursor: Cursor | None):
         # behavior. Only an *inactive* multi-slot row splits into per-slot
         # colored segments (the active row's spec-mandated exemption).
         if (
-            r.kind == "header"
+            r.kind != "agent"
             or (r.win is not None and r.win.active)
             or len(r.slots) <= 1
         ):
             text = _row_text(r)
             if is_cursor:
                 text = _decorate_cursor(text)
-            attr = _agent_attr(r) if r.kind == "agent" else 0
+            attr = (
+                _agent_attr(r)
+                if r.kind == "agent"
+                else _removal_attr(r)
+                if r.kind == "removal"
+                else 0
+            )
             stdscr.addnstr(y, 0, text, max(0, width - 1), attr)
             row_at_y[y] = _row_key(r)
             text_w_at_y[y] = len(text)
@@ -543,6 +591,13 @@ def _agent_window_id(cursor: Cursor | None) -> str | None:
 
 
 def kill_at(cursor: Cursor | None) -> None:
+    """Kill the agent under the cursor (popup asks the prune questions). On a
+    failed worktree-removal row, `k` dismisses it instead; a removal that is
+    still running can't be dismissed."""
+    if cursor is not None and cursor.kind == "removal":
+        if _is_failed(cursor.key):
+            removals.dismiss(cursor.key)
+        return
     wid = _agent_window_id(cursor)
     if wid is None:
         return
@@ -558,6 +613,31 @@ def kill_at(cursor: Cursor | None) -> None:
             "-h",
             "20%",
             f"agent-kill --window-id {wid}",
+        ]
+    )
+
+
+def _is_failed(key: str) -> bool:
+    # list_all applies the dead-worker check that a bare get() doesn't.
+    return any(
+        r.key == key and r.status == removals.FAILED for r in removals.list_all()
+    )
+
+
+def show_removal(key: str) -> None:
+    """Details popup for a background worktree removal (↵ / click its row)."""
+    _popen(
+        [
+            "tmux",
+            "-L",
+            "agents",
+            "display-popup",
+            "-E",
+            "-w",
+            "70%",
+            "-h",
+            "40%",
+            f"agent-kill --show-removal {key}",
         ]
     )
 
@@ -717,15 +797,27 @@ def handle_key(state: TuiState, ch: int) -> None:
         other_at(state.cursor)
 
 
+_LEFT = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+_RIGHT = curses.BUTTON3_PRESSED | curses.BUTTON3_CLICKED
+
+
 def handle_mouse(state: TuiState, mx: int, my: int, bstate: int) -> None:
     """Apply a mouse event. tmux's mouse forwarding can land as either
-    BUTTON1_PRESSED or BUTTON1_CLICKED depending on the curses-negotiated
-    mouse mode; accept either and ignore everything else."""
-    if not (bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED)):
+    PRESSED or CLICKED depending on the curses-negotiated mouse mode; accept
+    either and ignore everything else. Left click opens the row; right click
+    on a row is `k` on it (kill an agent / dismiss a failed removal) —
+    tmux's default MouseDown3Pane forwards to panes that requested mouse
+    events, so no extra binding is needed."""
+    if not (bstate & (_LEFT | _RIGHT)):
         return
     target = state.row_at_y[my] if 0 <= my < len(state.row_at_y) else None
     if target is None or mx >= state.text_w_at_y[my]:
-        tmux.select_pane(state.self_pane_id)
+        if bstate & _LEFT:
+            tmux.select_pane(state.self_pane_id)
+        return
+    if bstate & _RIGHT:
+        state.cursor = target
+        kill_at(target)
         return
     state.cursor = target
     state.cursor = activate_target(state.cursor, state.folds)
