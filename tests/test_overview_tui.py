@@ -660,7 +660,7 @@ def test_handle_mouse_click_on_agent_switches_window_and_resumes_tracking(
     assert s.last_active == Cursor("agent", "@2")  # tracking re-engaged
 
 
-def test_handle_mouse_ignores_non_button1_events(monkeypatch, tmp_state_dir):
+def test_handle_mouse_ignores_other_buttons(monkeypatch, tmp_state_dir):
     import curses
 
     s = _two_agent_state(monkeypatch, tmp_state_dir)
@@ -671,12 +671,15 @@ def test_handle_mouse_ignores_non_button1_events(monkeypatch, tmp_state_dir):
     ] + [None] * 17
     s.text_w_at_y = [20, 30, 30] + [0] * 17
     monkeypatch.setattr(
-        tmux, "select_window", lambda t: pytest.fail("non-BUTTON1 should be ignored")
+        tmux, "select_window", lambda t: pytest.fail("BUTTON2 should be ignored")
     )
     monkeypatch.setattr(
-        tmux, "select_pane", lambda p: pytest.fail("non-BUTTON1 should be ignored")
+        tmux, "select_pane", lambda p: pytest.fail("BUTTON2 should be ignored")
     )
-    overview.handle_mouse(s, mx=10, my=2, bstate=curses.BUTTON3_PRESSED)
+    monkeypatch.setattr(
+        overview, "_popen", lambda argv: pytest.fail("BUTTON2 should be ignored")
+    )
+    overview.handle_mouse(s, mx=10, my=2, bstate=curses.BUTTON2_PRESSED)
 
 
 def test_handle_mouse_accepts_button1_clicked_too(monkeypatch, tmp_state_dir):

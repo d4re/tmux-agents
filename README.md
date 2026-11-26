@@ -430,7 +430,7 @@ Cheat sheet:
 | Keys                | Action                                           |
 |---------------------|--------------------------------------------------|
 | `Ctrl-Space a`      | New agent — prompts for `<project> [branch]`     |
-| `Ctrl-Space k`      | Kill agent — picker for window + worktree removal |
+| `Ctrl-Space k`      | Kill agent — picker for window + worktree removal (the removal itself runs in the background; progress shows in the overview) |
 | `Ctrl-Space r`      | Restore dead agent panes (revives every window whose Claude pane died) |
 | `Ctrl-Space b`      | Rebuild a project's container and resume its agents (warns first if any are busy) |
 | `Ctrl-Space e`      | Rename current window's branch part              |
@@ -562,6 +562,7 @@ Toggle with `Ctrl-Space L`. The choice persists in `/tmp/tmux-agents/layout`.
 In the split layout, the bottom overview pane is interactive:
 
 - **Click an agent row** (from any pane) — switch to that agent's window.
+- **Right-click an agent row** — kill that agent (same popup as `k`).
 - **Click a repo header** — fold or unfold the repo group; state persists
   across `agents` restarts (saved alongside other state under
   `$TMUX_AGENTS_STATE_DIR`, default `/tmp/tmux-agents/`).
@@ -572,6 +573,12 @@ In the split layout, the bottom overview pane is interactive:
   `a` / `k` / `r` / `e` mirror the prefix bindings (new / kill / restore /
   rename) — `a`, `k`, `e` act on the cursor's agent; `r` restores all dead
   panes. The old uppercase keys still work.
+- **Worktree removals.** After you kill an agent and choose to prune its
+  worktree, the popup closes right away and the deletion continues in the
+  background as a dim `✕ <name>  removing worktree…` row under its repo. It
+  disappears when done. If it fails, the row turns red: `↵` (or click) shows
+  the error, `k` (or right-click) dismisses it. The "force remove?" question
+  for uncommitted changes is still asked in the popup, before it closes.
 
 A dim hint at the bottom-right of the pane shows the available keys, spelled
 as the full prefix chord (your `local.conf` prefix override is reflected

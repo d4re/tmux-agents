@@ -406,6 +406,46 @@ def remove(
         raise WorktreeError(stderr or "git worktree remove failed")
 
 
+def is_husk(repo: Path, branch: str) -> bool:
+    """True iff the worktree dir exists but has no `.git` entry — git won't
+    know it (`remove` would raise NotAWorktreeError). Same `.git` test as
+    `list_existing`."""
+    target = repo / ".worktrees" / branch
+    return target.is_dir() and not (target / ".git").exists()
+
+
+def is_dirty(
+    repo: Path,
+    branch: str,
+    *,
+    container: str | None = None,
+    container_workdir: str | None = None,
+    container_user: str | None = None,
+) -> bool:
+    """Would `remove` (without force) refuse this worktree? Runs the same
+    `git status --porcelain` check git does, but quickly and up front, so
+    the force question can be asked before the slow removal is backgrounded.
+    Raises WorktreeError if git can't answer."""
+    target = repo / ".worktrees" / branch
+    if not target.exists():
+        return False
+    where = (
+        f"{container_workdir}/.worktrees/{branch}"
+        if container and container_workdir
+        else str(target)
+    )
+    r = _git_run(
+        ["-C", where, "status", "--porcelain", "--ignore-submodules=none"],
+        repo=repo,
+        container=container,
+        container_workdir=container_workdir,
+        container_user=container_user or "vscode",
+    )
+    if r.returncode != 0:
+        raise WorktreeError(r.stderr.strip() or "git status failed")
+    return bool(r.stdout.strip())
+
+
 def remove_leftover(repo: Path, branch: str) -> None:
     """Delete a husk worktree dir git refused to remove (NotAWorktreeError).
 

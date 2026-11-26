@@ -122,6 +122,12 @@ def spawn_log(window_id: str) -> Path:
     return state_dir() / f"spawn-{window_id}.log"
 
 
+def removals_dir() -> Path:
+    """One `<key>.json` record per background worktree removal queued by
+    `agent-kill` (see tmux_agents.removals); the overview lists them."""
+    return state_dir() / "removals"
+
+
 def tick_cache() -> Path:
     """Per-tick fingerprint of the window/letter set. Used to skip
     redundant tmux set-option subprocess calls when nothing changed."""

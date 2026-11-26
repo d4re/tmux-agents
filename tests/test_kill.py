@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from tmux_agents import container, pickers, sandbox, tmux, windows, worktree
+from tmux_agents import (
+    container,
+    pickers,
+    removals,
+    sandbox,
+    tmux,
+    windows,
+    worktree,
+)
 from tmux_agents.commands import kill
 
 
@@ -28,10 +36,28 @@ def reaped(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def bg(monkeypatch):
+    """Run the background removal worker inline: capture the `run-shell -b`
+    command agent-kill queues, then execute `removals.run` for its key (the
+    real `--finish-removal` forks). Also defaults the up-front dirty check
+    to clean so no test shells out to git."""
+    queued: list[str] = []
+
+    def fake_bg(command):
+        queued.append(command)
+        removals.run(command.rsplit(" ", 1)[1])
+
+    monkeypatch.setattr(tmux, "run_shell_bg", fake_bg)
+    monkeypatch.setattr(worktree, "is_dirty", lambda *a, **k: False)
+    return queued
+
+
 def _write_mapping(
     window_id: str, project: str, branch: str | None, host_worktree: Path
 ):
     host_worktree.mkdir(parents=True, exist_ok=True)
+    (host_worktree / ".git").write_text("gitdir: elsewhere\n")
     windows.write_mapping(
         windows.WindowMapping(
             window_id=window_id,
@@ -302,7 +328,7 @@ def test_kill_interactive_prune_yes_clean_kills(kill_env, monkeypatch, tmp_state
     monkeypatch.setattr(
         worktree,
         "remove",
-        lambda r, b, *, force=False: remove_calls.append((r, b, force)),
+        lambda r, b, *, force=False, **_: remove_calls.append((r, b, force)),
     )
     rc = kill.main([])
     assert rc == 0
@@ -323,18 +349,16 @@ def test_kill_interactive_dirty_force_yes(kill_env, monkeypatch, tmp_state_dir):
         return next(yes_no_results)
 
     monkeypatch.setattr(pickers, "prompt_yes_no", fake_yn)
+    monkeypatch.setattr(worktree, "is_dirty", lambda *a, **k: True)
     calls = []
-
-    def fake_remove(r, b, *, force=False):
-        calls.append(force)
-        if not force:
-            raise worktree.DirtyWorktreeError("contains modified or untracked files")
-
-    monkeypatch.setattr(worktree, "remove", fake_remove)
+    monkeypatch.setattr(
+        worktree, "remove", lambda r, b, *, force=False, **_: calls.append(force)
+    )
     rc = kill.main([])
     assert rc == 0
-    assert calls == [False, True]
+    assert calls == [True]  # force asked up front, single forced removal
     assert kill_env.killed == ["@1"]
+    assert len(yn_prompts) == 2
     assert all("api:feat-x" in p for p in yn_prompts)
 
 
@@ -350,18 +374,16 @@ def test_kill_interactive_dirty_force_no_preserves_window(
         "prompt_yes_no",
         lambda prompt, *, default: next(yes_no_prompts),
     )
+    monkeypatch.setattr(worktree, "is_dirty", lambda *a, **k: True)
     calls = []
-
-    def fake_remove(r, b, *, force=False):
-        calls.append(force)
-        if not force:
-            raise worktree.DirtyWorktreeError("contains modified or untracked files")
-
-    monkeypatch.setattr(worktree, "remove", fake_remove)
+    monkeypatch.setattr(
+        worktree, "remove", lambda r, b, *, force=False, **_: calls.append(force)
+    )
     rc = kill.main([])
     assert rc == 0
-    assert calls == [False]
+    assert calls == []
     assert kill_env.killed == []
+    assert removals.list_all() == []
 
 
 def _husk_env(kill_env, monkeypatch, tmp_state_dir):
@@ -370,6 +392,7 @@ def _husk_env(kill_env, monkeypatch, tmp_state_dir):
     wt = kill_env.repo / ".worktrees" / "feat-x"
     _write_mapping("@1", "api", "feat-x", wt)
     (wt / ".claude").mkdir()
+    (wt / ".git").unlink()
     _stub_state(tmp_state_dir, "@1", "I")
     monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
 
@@ -608,18 +631,149 @@ def test_kill_with_window_id_skips_picker_and_kills_directly(monkeypatch):
 def test_kill_interactive_prune_prints_progress(
     kill_env, monkeypatch, tmp_state_dir, capsys
 ):
-    """The popup is blank after the fzf prune prompt; the slow worktree
-    removal must announce itself so the wait doesn't look like a hang."""
+    """The popup is blank after the fzf prune prompt; the dirty check must
+    announce itself so the wait doesn't look like a hang."""
     _write_mapping("@1", "api", "feat-x", kill_env.repo / ".worktrees" / "feat-x")
     _stub_state(tmp_state_dir, "@1", "I")
     monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
     monkeypatch.setattr(pickers, "prompt_yes_no", lambda prompt, *, default: True)
-    monkeypatch.setattr(worktree, "remove", lambda r, b, *, force=False: None)
+    monkeypatch.setattr(worktree, "remove", lambda r, b, *, force=False, **_: None)
     rc = kill.main([])
     assert rc == 0
+    assert "checking feat-x for uncommitted changes" in capsys.readouterr().out
+
+
+# --- background removal --------------------------------------------------------
+
+
+def _prune_yes(kill_env, monkeypatch, tmp_state_dir):
+    _write_mapping("@1", "api", "feat-x", kill_env.repo / ".worktrees" / "feat-x")
+    _stub_state(tmp_state_dir, "@1", "I")
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+    monkeypatch.setattr(pickers, "prompt_yes_no", lambda prompt, *, default: True)
+
+
+def test_kill_interactive_kills_window_before_removal_runs(
+    kill_env, monkeypatch, tmp_state_dir, bg
+):
+    """The window dies first (agent can't write into a folder being deleted)
+    and the removal goes to a detached `run-shell -b` worker, not the popup."""
+    _prune_yes(kill_env, monkeypatch, tmp_state_dir)
+    order = []
+    monkeypatch.setattr(tmux, "kill_window", lambda t: order.append(("kill", t)))
+    monkeypatch.setattr(
+        worktree, "remove", lambda r, b, *, force=False, **_: order.append(("rm", b))
+    )
+    assert kill.main([]) == 0
+    assert order == [("kill", "@1"), ("rm", "feat-x")]
+    assert len(bg) == 1 and bg[0].startswith("agent-kill --finish-removal ")
+    assert removals.list_all() == []  # success drops the record
+
+
+def test_kill_background_removal_failure_is_recorded(
+    kill_env, monkeypatch, tmp_state_dir
+):
+    _prune_yes(kill_env, monkeypatch, tmp_state_dir)
+
+    def boom(r, b, *, force=False, **_):
+        raise worktree.WorktreeError("fatal: permission denied")
+
+    monkeypatch.setattr(worktree, "remove", boom)
+    assert kill.main([]) == 0
+    assert kill_env.killed == ["@1"]
+    [r] = removals.list_all()
+    assert (r.name, r.status, r.error) == (
+        "api:feat-x",
+        removals.FAILED,
+        "fatal: permission denied",
+    )
+
+
+def test_kill_worker_launch_failure_is_recorded(kill_env, monkeypatch, tmp_state_dir):
+    _prune_yes(kill_env, monkeypatch, tmp_state_dir)
+
+    def no_server(command):
+        raise RuntimeError("no server")
+
+    monkeypatch.setattr(tmux, "run_shell_bg", no_server)
+    assert kill.main([]) == 0
+    [r] = removals.list_all()
+    assert r.status == removals.FAILED
+    assert "could not start removal worker" in r.error
+
+
+def test_kill_dirty_check_error_still_queues_removal(
+    kill_env, monkeypatch, tmp_state_dir
+):
+    """If git can't answer the dirty check, don't block the kill — the
+    background removal will report whatever is actually wrong."""
+    _prune_yes(kill_env, monkeypatch, tmp_state_dir)
+
+    def cant_tell(*a, **k):
+        raise worktree.WorktreeError("fatal: not a git repository")
+
+    monkeypatch.setattr(worktree, "is_dirty", cant_tell)
+    removed = []
+    monkeypatch.setattr(
+        worktree, "remove", lambda r, b, *, force=False, **_: removed.append(force)
+    )
+    assert kill.main([]) == 0
+    assert kill_env.killed == ["@1"]
+    assert removed == [False]
+
+
+def test_kill_container_removal_carries_container_kwargs(
+    monkeypatch, tmp_config_dir, tmp_path, tmp_state_dir
+):
+    repo = tmp_path / "api"
+    repo.mkdir()
+    (tmp_config_dir / "projects.toml").write_text(
+        f'[api]\nrepo = "{repo}"\ncontainer = "api-devcontainer"\n'
+        f'container_workdir = "/work"\nexec_cmd = "claude"\n'
+    )
+    monkeypatch.setattr(
+        tmux,
+        "list_windows",
+        lambda s: [tmux.Window(id="@1", index=1, name="api:feat-x")],
+    )
+    monkeypatch.setattr(tmux, "kill_window", lambda t: None)
+    monkeypatch.setattr(container, "ensure_up", lambda proj, up_cmd: "api-dc")
+    _write_mapping("@1", "api", "feat-x", repo / ".worktrees" / "feat-x")
+    monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
+    monkeypatch.setattr(pickers, "prompt_yes_no", lambda prompt, *, default: True)
+    calls = []
+    monkeypatch.setattr(worktree, "remove", lambda *a, **k: calls.append((a, k)))
+    assert kill.main([]) == 0
+    assert calls == [
+        (
+            (repo, "feat-x"),
+            {
+                "force": False,
+                "container": "api-dc",
+                "container_workdir": "/work",
+                "container_user": None,
+            },
+        )
+    ]
+
+
+def test_show_removal_prints_error(tmp_state_dir, monkeypatch, capsys):
+    removals.save(
+        removals.Removal(
+            key="k1",
+            name="api:feat-x",
+            project="api",
+            branch="feat-x",
+            repo="/r",
+            status=removals.FAILED,
+            error="fatal: boom",
+        )
+    )
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+    assert kill.main(["--show-removal", "k1"]) == 0
     out = capsys.readouterr().out
-    assert "removing worktree feat-x" in out
-    assert "worktree removed" in out
+    assert "fatal: boom" in out
+    assert "/r/.worktrees/feat-x" in out
 
 
 def test_kill_prune_container_prints_container_check(
@@ -757,15 +911,13 @@ def test_kill_sandbox_dirty_worktree_kept_does_not_reap(
     sbx_kill_env, monkeypatch, reaped
 ):
     """Declining the force-remove keeps the window alive — its agent too."""
-    (sbx_kill_env.repo / ".worktrees" / "feat-x").mkdir(parents=True)
+    wt = sbx_kill_env.repo / ".worktrees" / "feat-x"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: elsewhere\n")
     monkeypatch.setattr(pickers, "pick_one", lambda items, *, prompt, **_: items[0])
     answers = iter([True, False])  # prune? yes; force remove? no
     monkeypatch.setattr(pickers, "prompt_yes_no", lambda p, *, default: next(answers))
-
-    def dirty(*a, **k):
-        raise worktree.DirtyWorktreeError("dirty")
-
-    monkeypatch.setattr(worktree, "remove", dirty)
+    monkeypatch.setattr(worktree, "is_dirty", lambda *a, **k: True)
     assert kill.main([]) == 0
     assert reaped == []
     assert sbx_kill_env.killed == []
