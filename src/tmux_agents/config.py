@@ -4,6 +4,7 @@ for `exec_cmd`, `up_cmd`, and `container_workdir`."""
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +98,10 @@ class Project:
     # inside the VM — create-time only, changing them needs agent-rebuild).
     sbx_mounts: tuple[str, ...] = ()
     sbx_memory: str | None = None
+    # Sandbox name override (default: the project name). sbx keys volume
+    # storage on the sandbox name and offers no local way to resize or
+    # delete it, so a project moves to fresh volumes by changing this.
+    sbx_name: str | None = None
 
     def exec_cmd_for(self, kind: str) -> str:
         return self.exec_cmd if kind == agent_kind.CLAUDE else self.codex_exec_cmd
@@ -115,9 +120,7 @@ class Project:
 
     @property
     def sandbox_name(self) -> str:
-        # Sandbox name = project name (host-global; a collision override key
-        # is deliberately deferred as YAGNI — see docs/SANDBOX-MODE.md).
-        return self.name
+        return self.sbx_name or self.name
 
     def workdir_for(self, branch: str | None) -> str:
         if self.is_container:
@@ -150,7 +153,20 @@ class Project:
         )
 
 
-_SBX_KEYS = ("sbx_workload", "sbx_kits", "sbx_mounts", "sbx_memory")
+_SBX_KEYS = ("sbx_workload", "sbx_kits", "sbx_mounts", "sbx_memory", "sbx_name")
+
+# sbx's own name rule: 2–63 ASCII letters/digits/hyphens/periods, each
+# dot-separated part starting and ending alphanumeric; "default" reserved.
+_SBX_NAME_PART = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+_SBX_NAME_RE = re.compile(rf"{_SBX_NAME_PART}(?:\.{_SBX_NAME_PART})*")
+
+
+def _valid_sbx_name(name: str) -> bool:
+    return (
+        2 <= len(name) <= 63
+        and name != "default"
+        and bool(_SBX_NAME_RE.fullmatch(name))
+    )
 
 
 def _parse_sbx_mounts(name: str, raw: object) -> tuple[str, ...]:
@@ -254,6 +270,15 @@ def load(path: Path) -> dict[str, Project]:
         if sbx_memory is not None and not isinstance(sbx_memory, str):
             raise ConfigError(f"project {name!r}: 'sbx_memory' must be a string")
         sbx_mounts = _parse_sbx_mounts(name, entry.get("sbx_mounts", []))
+        sbx_name = entry.get("sbx_name")
+        if sbx_name is not None and (
+            not isinstance(sbx_name, str) or not _valid_sbx_name(sbx_name)
+        ):
+            raise ConfigError(
+                f"project {name!r}: 'sbx_name' must be 2-63 letters, digits, "
+                "hyphens or periods (each dot-separated part starting and "
+                "ending alphanumeric), not 'default'"
+            )
         devcontainer = bool(entry.get("devcontainer", False))
         container = entry.get("container")
         if container is not None and devcontainer:
@@ -324,6 +349,7 @@ def load(path: Path) -> dict[str, Project]:
             sbx_kits=tuple(sbx_kits_raw),
             sbx_mounts=sbx_mounts,
             sbx_memory=sbx_memory,
+            sbx_name=sbx_name,
         )
     return projects
 

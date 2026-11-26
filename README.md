@@ -231,6 +231,7 @@ sbx_kits     = ["/Users/you/dev/gateway-service/.devcontainer/sbx/kit",
                 "git+https://github.com/you/dotfiles.git#ref=main"]  # v3 mixins
 sbx_mounts   = ["~/.kube:ro", "~/.databricks"]       # extra host dirs, ":ro" honored
 sbx_memory   = "8g"                   # sbx default: 50% of host RAM
+sbx_name     = "gateway2"             # default: the project name (see below)
 ```
 
 - `sandbox` is mutually exclusive with `container`, `devcontainer`, `user`,
@@ -259,6 +260,9 @@ sbx_memory   = "8g"                   # sbx default: 50% of host RAM
   create — so `agent-rebuild` is a plain rm + create (new workload / kits /
   mounts / memory take effect) and conversations resume where they were;
   a restore that has to recreate a deleted sandbox resumes the same way.
+  Volume storage belongs to the sandbox *name* and can't be resized or
+  deleted locally (sbx 0.55), so `sbx_name` exists to move a project onto
+  fresh volumes without renaming the project.
 - `agent-vscode` attaches to the actual sandbox via Remote-SSH
   (`sbx setup ssh` once; `--local` opens the host-side folder instead).
   `agent-terminal` shells into the sandbox, never the host.

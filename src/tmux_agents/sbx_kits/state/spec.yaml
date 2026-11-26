@@ -7,10 +7,14 @@
 # storage on (owner, sandbox name, path) — NOT on this kit's identity — so
 # the kit can move or change without orphaning data.
 #
-# Do NOT add size/mode/tmpfs to an existing entry: sbx refuses to recreate
-# a sandbox whose retained volume config differs (no implicit resize).
-# Adding a NEW path is fine (fresh storage). Ownership + permissions are
-# fixed in the root startup hook instead (a fresh mount may be root-owned).
+# Sizes are set once and are effectively permanent: an unsized volume gets
+# ~512 MB, and sbx (0.55) silently reattaches a retained volume at its
+# ORIGINAL size — there is no local resize or delete (`sbx volume` is
+# cloud-only). Changing a size here only affects sandbox names that never
+# had that volume; an existing project moves to fresh volumes via
+# `sbx_name`. Adding a NEW path is fine (fresh storage). Ownership +
+# permissions are fixed in the root startup hook, not `mode` (a fresh mount
+# may be root-owned).
 #
 # Not here, deliberately: ~/.claude/skills (sbx's shared skills mount —
 # sbx rejects volumes hiding it, which is also why ~/.claude can't be one
@@ -28,30 +32,37 @@ capabilities:
     description: Claude sessions + auto-memory
     config:
       path: /home/agent/.claude/projects
+      size: 4g
   - type: com.docker.sandbox/volume@1
     description: Claude file checkpoints (rewind)
     config:
       path: /home/agent/.claude/file-history
+      size: 2g
   - type: com.docker.sandbox/volume@1
     description: Claude todo lists
     config:
       path: /home/agent/.claude/todos
+      size: 256m
   - type: com.docker.sandbox/volume@1
     description: Claude plans
     config:
       path: /home/agent/.claude/plans
+      size: 256m
   - type: com.docker.sandbox/volume@1
     description: Claude per-session scratchpads (uid 1000)
     config:
       path: /tmp/claude-1000
+      size: 16g
   - type: com.docker.sandbox/volume@1
     description: Codex sessions
     config:
       path: /home/agent/.codex/sessions
+      size: 2g
   - type: com.docker.sandbox/volume@1
     description: Single-file state (prompt histories), symlinked into place
     config:
       path: /home/agent/.local/state/tmux-agents
+      size: 256m
   - type: com.docker.sandbox/lifecycle@1
     config:
       startup:

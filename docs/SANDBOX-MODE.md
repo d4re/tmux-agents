@@ -304,11 +304,16 @@ mount; sbx rejects volumes that would hide it — which is also why
 
 Rules:
 
-- **Never change `size`/`mode`/`tmpfs` of an existing entry.** sbx
-  compares a retained volume's config on every create and refuses the
-  operation on any difference (no implicit resize). Adding a *new* path is
-  fine (fresh storage). Ownership is fixed in a root startup hook instead
-  of `mode`, because a fresh mount may come up root-owned.
+- **Sizes are permanent per sandbox name.** An unsized volume gets
+  ~512 MB (hit live: 4.6 GB of scratchpads filled it). sbx 0.55 silently
+  reattaches a retained volume at its *original* size when the declared
+  size changes (the spec says it should refuse), and offers no local way
+  to resize or delete retained storage (`sbx volume` is cloud-only). So
+  every state-kit volume declares a generous size up front, and a project
+  that needs fresh volumes gets a new sandbox name via `sbx_name` — the
+  old name's storage stays on disk until sbx can remove it. Adding a *new*
+  path is fine (fresh storage). Ownership is fixed in a root startup hook
+  instead of `mode`, because a fresh mount may come up root-owned.
 - Project kits use the same mechanism for their own per-sandbox
   credentials caches (`~/.databricks` token cache, `~/.kube` ServiceAccount
   kubeconfig).

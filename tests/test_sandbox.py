@@ -262,6 +262,13 @@ def test_state_kit_ships_volumes_for_agent_state():
         "/home/agent/.local/state/tmux-agents",
     ):
         assert f"path: {path}\n" in spec
+    # Every volume declares an explicit size: unsized ones get ~512 MB, and
+    # sbx can neither resize nor delete a retained volume afterwards.
+    import re as _re
+
+    caps = spec.split("capabilities:")[1].split("lifecycle@1")[0]
+    entries = _re.findall(r"path: (\S+)\n(\s+size: \S+)?", caps)
+    assert entries and all(size for _, size in entries), entries
     # Never a volume over (or at) the shared skills mount.
     assert "path: /home/agent/.claude\n" not in spec
     assert "skills\n" not in spec.split("capabilities:")[1].split("lifecycle")[0]

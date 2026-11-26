@@ -623,6 +623,37 @@ def test_sbx_keys_require_sandbox(tmp_path, key_line):
         config.load(path)
 
 
+def test_sandbox_name_defaults_to_project_name(tmp_path):
+    p = config.load(_sandbox_toml(tmp_path))["sbxproj"]
+    assert p.sandbox_name == "sbxproj"
+
+
+def test_sbx_name_overrides_sandbox_name(tmp_path):
+    """Volume storage is keyed on the sandbox NAME and can't be resized or
+    deleted locally, so moving a project to fresh volumes means a new name
+    while the project (and its window mappings) keeps its own."""
+    p = config.load(_sandbox_toml(tmp_path, extra='sbx_name = "pkz.v2"\n'))["sbxproj"]
+    assert p.name == "sbxproj"
+    assert p.sandbox_name == "pkz.v2"
+    assert p.substitute("{sandbox}", branch=None) == "pkz.v2"
+
+
+@pytest.mark.parametrize(
+    "bad", ["x", "-lead", "trail-", "has space", "default", "a" * 64, "a..b"]
+)
+def test_sbx_name_rejects_invalid(tmp_path, bad):
+    with pytest.raises(config.ConfigError, match="sbx_name"):
+        config.load(_sandbox_toml(tmp_path, extra=f'sbx_name = "{bad}"\n'))
+
+
+def test_sbx_name_requires_sandbox(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = _write(tmp_path, f'[p]\nrepo = "{repo}"\nsbx_name = "abc"\n')
+    with pytest.raises(config.ConfigError, match="requires 'sandbox = true'"):
+        config.load(path)
+
+
 def test_sbx_template_rejected_with_migration_hint(tmp_path):
     """sbx >= 0.51 composes v3 kits; a `-t` image can't carry the agent
     mixins, so the old key fails loudly instead of being ignored."""
