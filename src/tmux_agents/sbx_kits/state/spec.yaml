@@ -28,6 +28,14 @@ description: Persistent agent state (sessions, memory, scratchpad, history) acro
 # ~/.claude and ~/.codex) without requiring them.
 integrates: ["claude", "codex"]
 capabilities:
+  # Host ssh-agent relay (/run/ssh-agent.sock + SSH_AUTH_SOCK) for git over
+  # SSH and commit signing. v3 compositions only get it when some kit
+  # declares this, and neither the shell workload nor the agent mixins do.
+  # Runtime only: no install hook needs the agent. Keys never enter the VM;
+  # the relay can list and sign, not add or remove keys.
+  - type: com.docker.sandbox/ssh-agent@1
+    config:
+      phase: runtime
   - type: com.docker.sandbox/volume@1
     description: Claude sessions + auto-memory
     config:
