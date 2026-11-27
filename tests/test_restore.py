@@ -2778,12 +2778,12 @@ def test_execute_plan_sandbox_ensures_up_hooks_and_daemon_once(
     assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in resumed[0]
 
 
-def test_execute_plan_recreated_sandbox_clears_stale_session_ids(
+def test_execute_plan_recreated_sandbox_keeps_resume_ids(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, sandbox_projects_file
 ):
-    """ensure_up returning True (created fresh) means the old session files
-    died with the VM — claude --resume <stale-id> would error, so resume
-    args must be dropped."""
+    """ensure_up returning True (recreated after deletion) no longer means
+    lost sessions: the state-kit volumes reattach by sandbox name, so the
+    resume id stays valid and is passed through."""
     from tmux_agents import codex_hooks
     from tmux_agents import sandbox as sandbox_mod
     from tmux_agents.commands import restore
@@ -2809,7 +2809,7 @@ def test_execute_plan_recreated_sandbox_clears_stale_session_ids(
 
     finals = [c for _, c in respawns if "tail -F" not in c]
     assert len(finals) == 1
-    assert "--resume" not in finals[0]
+    assert "--resume aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in finals[0]
 
 
 def test_execute_plan_sandbox_failure_marks_panes_with_hint(
@@ -2876,19 +2876,16 @@ def test_execute_plan_no_daemon_call_for_container_only_plan(
     restore.execute_plan(plan, placeholders, projs)
 
 
-def test_recreated_sandbox_holds_codex_slot_and_persists_id_clearing(
+def test_recreated_sandbox_resumes_codex_slot(
     monkeypatch, tmp_config_dir, tmp_state_dir, tmp_path, sandbox_projects_file
 ):
-    """A recreated sandbox has no codex login: the codex slot is held on
-    the login runbook (errored) instead of launching codex into an auth
-    error loop, and the session-id clearing is PERSISTED into the mapping
-    (a held slot never respawns, so a stale id would otherwise resurface
-    as `codex resume <stale>` on a later restore)."""
+    """Codex's login is proxy-managed (host OAuth via sbx/codex-mixin), so a
+    recreated sandbox needs no in-VM login: the codex slot resumes like any
+    other instead of being held on a login runbook."""
     import json as _json
 
-    from tmux_agents import codex_hooks, paths, startup
+    from tmux_agents import codex_hooks, paths
     from tmux_agents import sandbox as sandbox_mod
-    from tmux_agents import windows as windows_mod
     from tmux_agents.commands import restore
 
     paths.windows_previous_dir().mkdir(parents=True, exist_ok=True)
@@ -2915,10 +2912,6 @@ def test_recreated_sandbox_holds_codex_slot_and_persists_id_clearing(
     monkeypatch.setattr(sandbox_mod, "ensure_daemon", lambda: None)
     monkeypatch.setattr(sandbox_mod, "ensure_up", lambda p: True)  # recreated
     monkeypatch.setattr(codex_hooks, "ensure_sandbox", lambda name: True)
-    texts: list[str] = []
-    monkeypatch.setattr(
-        startup, "show_static_text", lambda pid, text: texts.append(text) or pid
-    )
 
     projs = _load_test_projects(sandbox_projects_file)
     plan = restore.plan_entries(live_panes={}, projects=projs)
@@ -2926,8 +2919,5 @@ def test_recreated_sandbox_holds_codex_slot_and_persists_id_clearing(
     restore.execute_plan(plan, placeholders, projs)
 
     finals = [c for _, c in respawns if "tail -F" not in c]
-    assert finals == []  # held, not respawned
-    assert any("codex login" in t for t in texts)
-    new_window_id = next(iter(placeholders))
-    fresh = windows_mod.read_mapping(new_window_id)
-    assert all(s.session_id is None for s in fresh.agents)
+    assert len(finals) == 1
+    assert "cccccccc-cccc-cccc-cccc-cccccccccccc" in finals[0]

@@ -186,12 +186,10 @@ def _provision(
                     with reporter.stage("sandbox") as st:
                         sandbox.ensure_daemon()
                         st.info("creating if absent (first time may take minutes)…")
-                        created = sandbox.ensure_up(proj)
-                        if created:
-                            st.info(
-                                "created fresh — claude /login and codex login "
-                                "required inside the sandbox"
-                            )
+                        if sandbox.ensure_up(proj):
+                            # Logins are proxy-managed (host `sbx secret`),
+                            # so a fresh sandbox is ready as-is.
+                            st.info("created")
                         else:
                             st.skip("already present")
                         if proj.forward_ssh_agent_explicit:

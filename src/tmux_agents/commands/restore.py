@@ -765,18 +765,16 @@ def _activate_project(
         multi = progress.MultiReporter(list(reporters.values()))
 
         container_name: str | None = None
-        sandbox_created = False
         try:
             if proj.backend == config.BACKEND_SANDBOX:
                 with multi.stage("sandbox") as st:
                     # Handles a sandbox that is GONE, not merely stopped —
                     # `sbx exec` auto-start does not cover deletion.
-                    sandbox_created = sandbox.ensure_up(proj)
-                    if sandbox_created:
-                        st.info(
-                            "recreated (was deleted) — fresh VM: claude /login "
-                            "and codex login required; resume ids cleared"
-                        )
+                    # Sessions survive a recreate (state-kit volumes
+                    # reattach by name) and logins are host-side, so resume
+                    # ids stay valid either way.
+                    if sandbox.ensure_up(proj):
+                        st.info("recreated (was deleted) — agent state reattached")
                     else:
                         st.skip("already present")
                 if proj.share_gh_auth:
@@ -835,24 +833,6 @@ def _activate_project(
                     exc_info=True,
                 )
 
-        def _slot_for_cmd(slot: windows.AgentSlot) -> windows.AgentSlot:
-            # A recreated sandbox lost its session files with the VM;
-            # passing the stale id would make `claude --resume` error out.
-            if sandbox_created and slot.session_id:
-                return dataclasses.replace(slot, session_id=None)
-            return slot
-
-        def _hold_codex_login(pane_full: str) -> None:
-            # A fresh sandbox has no codex login; launching codex into an
-            # auth error loop helps nobody — hold the pane on the runbook
-            # (the spec's errored-placeholder-with-hint for recreation).
-            shown = startup.show_static_text(
-                pane_full, sandbox.CODEX_LOGIN_RUNBOOK.format(name=proj.sandbox_name)
-            )
-            startup._write_pane_state(
-                e.host_worktree, shown.lstrip("%"), phase_value=phase.ERRORED
-            )
-
         # Per-entry: hooks + respawn-pane.
         template_path = resources.files("tmux_agents.hooks") / "agents.json"
         with resources.as_file(template_path) as template_file:
@@ -883,41 +863,17 @@ def _activate_project(
                 # Per-slot: a primary respawn failure never blocks (or is
                 # masked by) the secondary's, and vice versa — each is
                 # isolated exactly like today's per-entry failures.
-                if sandbox_created:
-                    # Persist the clearing, not just the respawn arguments:
-                    # a stale id left in the mapping (e.g. on a slot held
-                    # below) would be merged forward by the tick and
-                    # resurface as `--resume <stale>` on a later restore.
-                    windows.update_mapping(
-                        ph.new_window_id,
-                        lambda m: (
-                            dataclasses.replace(
-                                m,
-                                agents=[
-                                    dataclasses.replace(s, session_id=None)
-                                    for s in m.agents
-                                ],
-                            )
-                            if m is not None
-                            else None
-                        ),
-                    )
                 if ph.pane_id is not None:
                     pane = ph.pane_id
                     try:
-                        if sandbox_created and e.slots[0].kind == agent_kind.CODEX:
-                            _hold_codex_login(pane)
-                        else:
-                            cmd = _build_slot_cmd(
-                                proj, e, _slot_for_cmd(e.slots[0]), container_name
-                            )
-                            pane = startup.respawn(pane, cmd)
-                            logger.info(
-                                "%s: respawned pane=%s cmd_preview=%r",
-                                e.window_id,
-                                pane,
-                                cmd[:80],
-                            )
+                        cmd = _build_slot_cmd(proj, e, e.slots[0], container_name)
+                        pane = startup.respawn(pane, cmd)
+                        logger.info(
+                            "%s: respawned pane=%s cmd_preview=%r",
+                            e.window_id,
+                            pane,
+                            cmd[:80],
+                        )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
                         logger.exception("%s: %s", e.window_id, msg)
@@ -926,19 +882,14 @@ def _activate_project(
                     secondary = _secondary_slot_for_activation(e, ph.new_window_id)
                     pane2 = ph.secondary_pane_id
                     try:
-                        if sandbox_created and secondary.kind == agent_kind.CODEX:
-                            _hold_codex_login(pane2)
-                        else:
-                            cmd2 = _build_slot_cmd(
-                                proj, e, _slot_for_cmd(secondary), container_name
-                            )
-                            pane2 = startup.respawn(pane2, cmd2)
-                            logger.info(
-                                "%s: respawned secondary pane=%s cmd_preview=%r",
-                                e.window_id,
-                                pane2,
-                                cmd2[:80],
-                            )
+                        cmd2 = _build_slot_cmd(proj, e, secondary, container_name)
+                        pane2 = startup.respawn(pane2, cmd2)
+                        logger.info(
+                            "%s: respawned secondary pane=%s cmd_preview=%r",
+                            e.window_id,
+                            pane2,
+                            cmd2[:80],
+                        )
                     except Exception as ex:
                         msg = f"respawn-pane failed: {type(ex).__name__}: {ex}"
                         logger.exception("%s: %s", e.window_id, msg)

@@ -216,9 +216,14 @@ most ticks emit zero subprocess calls for window options.
   (Docker Sandboxes, the third project backend: `sandbox = true` →
   `Project.backend == BACKEND_SANDBOX`; dispatch on the backend enum, never
   bolt onto `is_container`). Locked daemon start, race-free `ensure_up`
-  (returns True iff it CREATED — fresh VM means logins/sessions are gone),
-  atomic `deliver`, state `export_state`/`import_state` for the
-  state-preserving `agent-rebuild`. Design doc: `docs/SANDBOX-MODE.md`.
+  (returns True iff it CREATED), atomic `deliver`, and the v3 composition
+  (`create_argv`: workload + Docker's agent mixins pinned by tag in
+  `CLAUDE_MIXIN`/`CODEX_MIXIN` + the package-data **state kit**
+  `sbx_kits/state/` + project kits). Agent state (sessions, memory,
+  scratchpads, histories) lives on the state kit's persistent volumes,
+  keyed by sandbox name, so `agent-rebuild` is a plain rm + same-name
+  create — never change an existing volume entry's config (sbx refuses
+  the recreate). Needs sbx >= 0.51. Design doc: `docs/SANDBOX-MODE.md`.
 - `src/tmux_agents/commands/*.py` — one file per CLI entry point, registered
   in `pyproject.toml` under `[project.scripts]`.
 - `tests/conftest.py` provides `tmp_state_dir` and `fixtures_dir` fixtures;

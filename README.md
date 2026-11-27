@@ -211,24 +211,35 @@ all, it falls back to creating the worktree from HEAD (with a warning).
 
 `sandbox = true` runs the project's agents inside a [Docker
 Sandboxes](https://github.com/docker/sbx-releases) microVM — its own kernel,
-its own Docker daemon, host-enforced deny-by-default egress, and Claude's
-OAuth token proxy-injected by the host (the agent can spend it but never
-read it). The full design, threat model, and honest limits live in
-`docs/SANDBOX-MODE.md`.
+its own Docker daemon, host-enforced deny-by-default egress, and both
+agents' logins proxy-injected by the host (the agent can spend them but
+never read them). Requires **sbx >= 0.51** (v3 kits). The full design,
+threat model, and honest limits live in `docs/SANDBOX-MODE.md`.
+
+Every sandbox is composed the same way: a v3 **workload** (`shell` by
+default) + Docker's published agent mixins **pinned by tag**
+(`sandbox.CLAUDE_MIXIN` / `sandbox.CODEX_MIXIN`) + tmux-agents' own
+**state kit** (persistent volumes, below) + the project's `sbx_kits`.
 
 ```toml
 [gateway]
 repo         = "/Users/you/dev/gateway-service"
 sandbox      = true
 # All optional:
-sbx_template = "gateway-sbx:0.3"      # default: stock claude template; avoid :latest
-sbx_kits     = ["https://github.com/you/dotfiles"]   # ordered kit refs
+sbx_workload = "shell"                # default; or a v3 workload kit (dir / OCI ref)
+sbx_kits     = ["/Users/you/dev/gateway-service/.devcontainer/sbx/kit",
+                "git+https://github.com/you/dotfiles.git#ref=main"]  # v3 mixins
 sbx_mounts   = ["~/.kube:ro", "~/.databricks"]       # extra host dirs, ":ro" honored
 sbx_memory   = "8g"                   # sbx default: 50% of host RAM
+sbx_name     = "gateway2"             # default: the project name (see below)
 ```
 
 - `sandbox` is mutually exclusive with `container`, `devcontainer`, `user`,
   `container_workdir`, and `up_cmd`. The sandbox is named after the project.
+- `sbx_kits` must be **v3** kits — sbx refuses to compose v1/v2 kits with
+  the v3 agent mixins. Project tooling belongs in a kit's recipe
+  (`spec.dockerfile`), not in a custom template image: `sbx_template` was
+  removed and is rejected with a migration hint.
 - The default `exec_cmd`/`codex_exec_cmd` run
   `sbx exec -it … {sandbox} bash -lc 'cd {workdir} && exec claude{resume_args}'`
   (codex identical) — `sbx exec` auto-starts a stopped sandbox, so there's
@@ -238,14 +249,21 @@ sbx_memory   = "8g"                   # sbx default: 50% of host RAM
 - `sbx_mounts` is configure-once parity for infra credentials (`~/.kube`
   and friends behave like devcontainer bind mounts). Prefer `:ro` wherever
   the workflow allows — a writable global credential dir is a major grant.
-  Mounts are **create-time only**: changing them (or `sbx_template` /
-  `sbx_memory`) needs `agent-rebuild`.
-- `forward_ssh_agent` is a no-op: sbx forwards the host agent natively.
-- `agent-rebuild` on a sandbox project is **state-preserving**: sessions,
-  history, memory, and the in-sandbox codex login are exported, the sandbox
-  is recreated (new template/mounts/memory take effect), and the state is
-  imported back — conversations resume where they were. `--discard-state`
-  skips the export for a destructive reset.
+  Mounts are **create-time only**: changing them (or `sbx_workload` /
+  `sbx_kits` / `sbx_memory`) needs `agent-rebuild`.
+- `forward_ssh_agent` is a no-op: sbx relays the host agent (the
+  tmux-agents state kit declares `ssh-agent@1`, which v3 sandboxes need).
+- **Agent state persists across recreation.** The state kit declares
+  persistent volumes for Claude's sessions/memory (`~/.claude/projects`),
+  file history, todos, plans, per-session scratchpads (`/tmp/claude-1000`),
+  Codex sessions, and both prompt histories. sbx keys them on the sandbox
+  *name*, retains them on `sbx rm`, and reattaches them on a same-name
+  create — so `agent-rebuild` is a plain rm + create (new workload / kits /
+  mounts / memory take effect) and conversations resume where they were;
+  a restore that has to recreate a deleted sandbox resumes the same way.
+  Volume storage belongs to the sandbox *name* and can't be resized or
+  deleted locally (sbx 0.55), so `sbx_name` exists to move a project onto
+  fresh volumes without renaming the project.
 - `agent-vscode` attaches to the actual sandbox via Remote-SSH
   (`sbx setup ssh` once; `--local` opens the host-side folder instead).
   `agent-terminal` shells into the sandbox, never the host.
@@ -253,12 +271,11 @@ sbx_memory   = "8g"                   # sbx default: 50% of host RAM
 One-time host setup (checked by preflight, not automated): install sbx
 (unpack the release tarball, symlink `bin/sbx` into `~/.local/bin`),
 `sbx login` (re-login every ~2 weeks — surfaced by the error messages when
-it lapses), `sbx daemon start -d --policy balanced`,
-`gh auth token | sbx secret set github` for private kit repos, `/login`
-inside the first claude pane, and — for the codex slot — a per-sandbox
-`codex login` (device-auth if your workspace allows it; otherwise bridge
-the callback port for the duration of the login:
-`sbx ports <name> --publish 1455:1455`, log in, `--unpublish 1455:1455`).
+it lapses), `sbx daemon start -d --policy balanced`, `sbx setup ssh`,
+`gh auth token | sbx secret set github` for private kit repos, and the two
+agent logins — `sbx secret set anthropic --oauth` (or `/login` in the first
+claude pane) and `sbx secret set openai --oauth` (ChatGPT, for the codex
+slot). Both are stored on the host; no sandbox ever needs a login.
 Optionally `sbx skills import` to seed the shared skills store.
 
 On Linux and WSL2, use the Linux release tarball (`install.sh` puts it under

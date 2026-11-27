@@ -202,8 +202,8 @@ def test_ensure_up_creates_with_full_argv(runs, tmp_state_dir, tmp_path):
     mount.mkdir()
     proj = _proj(
         tmp_path,
-        sbx_template="tpl:1",
-        sbx_kits=("https://github.com/rmabon/dotfiles",),
+        sbx_workload="/kits/acg-workload",
+        sbx_kits=("/kits/acg", "git+https://github.com/rmabon/dotfiles.git"),
         sbx_mounts=(f"{mount}:ro",),
         sbx_memory="8g",
     )
@@ -216,15 +216,62 @@ def test_ensure_up_creates_with_full_argv(runs, tmp_state_dir, tmp_path):
     )
     assert sandbox.ensure_up(proj) is True
     create = runs.calls[1]["argv"]
-    pairs = [create[i : i + 2] for i in range(len(create))]
-    assert create[:4] == ["sbx", "create", "--name", "acg"]
-    assert ["-t", "tpl:1"] in pairs
-    assert ["--kit", "https://github.com/rmabon/dotfiles"] in pairs
-    assert ["-m", "8g"] in pairs
-    # Agent positional is always `claude` (dual-agent architecture: codex
-    # logs in INSIDE the claude sandbox), then repo, then extra mounts.
-    assert create[create.index("claude") :] == ["claude", str(tmp_path), f"{mount}:ro"]
+    assert create == [
+        "sbx", "create", "--name", "acg", "-m", "8g",
+        # Both agents from PINNED mixins, then the state kit, then the
+        # project's own kits (order = composition order).
+        "--kit", sandbox.CLAUDE_MIXIN,
+        "--kit", sandbox.CODEX_MIXIN,
+        "--kit", str(sandbox.state_kit()),
+        "--kit", "/kits/acg",
+        "--kit", "git+https://github.com/rmabon/dotfiles.git",
+        # Workload positional, then repo, then extra workspaces.
+        "/kits/acg-workload", str(tmp_path), f"{mount}:ro",
+    ]  # fmt: skip
     assert runs.calls[1]["timeout"] == sandbox.CREATE_TIMEOUT
+
+
+def test_default_workload_is_stock_shell(tmp_path):
+    from tmux_agents.config import Project
+
+    proj = Project(name="acg", repo=tmp_path, exec_cmd="x", sandbox=True)
+    argv = sandbox.create_argv(proj)
+    assert argv[-2:] == ["shell", str(tmp_path)]
+
+
+def test_agent_mixins_are_pinned():
+    """A floating tag would let any rebuild silently change agent versions."""
+    for ref in (sandbox.CLAUDE_MIXIN, sandbox.CODEX_MIXIN):
+        repo, _, tag = ref.partition(":")
+        assert repo.startswith("sbx/") and tag and tag != "latest"
+
+
+def test_state_kit_ships_volumes_for_agent_state():
+    """The state kit is package data and declares a persistent volume for
+    every piece of state rebuild must not lose — including Claude's
+    scratchpad, which the old tar export never covered."""
+    spec = (sandbox.state_kit() / "spec.yaml").read_text()
+    assert spec.startswith("# syntax=docker/sandbox-kit:3")
+    for path in (
+        "/home/agent/.claude/projects",
+        "/home/agent/.claude/file-history",
+        "/home/agent/.claude/todos",
+        "/home/agent/.claude/plans",
+        "/tmp/claude-1000",
+        "/home/agent/.codex/sessions",
+        "/home/agent/.local/state/tmux-agents",
+    ):
+        assert f"path: {path}\n" in spec
+    # Every volume declares an explicit size: unsized ones get ~512 MB, and
+    # sbx can neither resize nor delete a retained volume afterwards.
+    import re as _re
+
+    caps = spec.split("capabilities:")[1].split("lifecycle@1")[0]
+    entries = _re.findall(r"path: (\S+)\n(\s+size: \S+)?", caps)
+    assert entries and all(size for _, size in entries), entries
+    # Never a volume over (or at) the shared skills mount.
+    assert "path: /home/agent/.claude\n" not in spec
+    assert "skills\n" not in spec.split("capabilities:")[1].split("lifecycle")[0]
 
 
 def test_ensure_up_raises_when_create_leaves_nothing(runs, tmp_state_dir, tmp_path):
@@ -244,50 +291,6 @@ def test_remove_uses_force(runs):
     runs.queue.append(_result(rc=0))
     sandbox.remove("acg")
     assert runs.calls[0]["argv"] == ["sbx", "rm", "--force", "acg"]
-
-
-# ---------------------------------------------------------------------------
-# State export/import (agent-rebuild's state-preserving recreate)
-# ---------------------------------------------------------------------------
-
-
-def test_export_state_tar_scope(runs):
-    """Export carries only what can't be recreated: ~/.claude minus the
-    shared skills mount and kit-regenerated settings.json; codex sessions,
-    history, and auth.json (a one-time transfer whose source dies with the
-    sandbox keeps the token lineage single). codex config.toml stays OUT —
-    kits regenerate it, and restoring an old copy would clobber a new
-    template's config."""
-    import base64 as b64
-
-    runs.queue.append(_result(stdout=b64.b64encode(b"TARBYTES").decode()))
-    blob = sandbox.export_state("acg")
-    assert blob == b"TARBYTES"
-    script = runs.calls[0]["argv"][runs.calls[0]["argv"].index("-c") + 1]
-    assert ".claude" in script
-    assert "--exclude='.claude/skills'" in script
-    assert "--exclude='.claude/settings.json'" in script
-    assert ".codex/auth.json" in script
-    assert ".codex/sessions" in script
-    assert "config.toml" not in script
-    # Failure semantics: sh has no pipefail, so base64 must be GATED on
-    # tar's own exit status via a temp-file stage — a `tar | base64` pipe
-    # would return base64's rc 0 over a truncated archive, and rebuild
-    # would then delete the sandbox believing the state was saved.
-    assert 'tar -cf "$t"' in script
-    assert '&& base64 < "$t"' in script
-    assert "| base64" not in script
-
-
-def test_import_state_roundtrips_base64(runs):
-    import base64 as b64
-
-    runs.queue.append(_result())
-    sandbox.import_state("acg", b"TARBYTES")
-    assert runs.calls[0]["input"] == b64.b64encode(b"TARBYTES").decode()
-    script = runs.calls[0]["argv"][runs.calls[0]["argv"].index("-c") + 1]
-    assert "base64 -d" in script
-    assert "tar -xf -" in script
 
 
 def test_recreate_is_one_locked_rm_create(runs, tmp_state_dir, tmp_path):
