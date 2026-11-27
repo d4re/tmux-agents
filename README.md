@@ -251,7 +251,8 @@ sbx_name     = "gateway2"             # default: the project name (see below)
   the workflow allows — a writable global credential dir is a major grant.
   Mounts are **create-time only**: changing them (or `sbx_workload` /
   `sbx_kits` / `sbx_memory`) needs `agent-rebuild`.
-- `forward_ssh_agent` is a no-op: sbx forwards the host agent natively.
+- `forward_ssh_agent` is a no-op: sbx relays the host agent (the
+  tmux-agents state kit declares `ssh-agent@1`, which v3 sandboxes need).
 - **Agent state persists across recreation.** The state kit declares
   persistent volumes for Claude's sessions/memory (`~/.claude/projects`),
   file history, todos, plans, per-session scratchpads (`/tmp/claude-1000`),

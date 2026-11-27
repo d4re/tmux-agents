@@ -1,8 +1,8 @@
 # syntax=docker/sandbox-kit:3
 # tmux-agents state kit — added by tmux-agents to every sandbox it creates.
 #
-# Declaration-only mixin: persistent block volumes (volume@1) for the agent
-# state that must survive `sbx rm` + `sbx create` under the same sandbox
+# Declaration-only mixin: the host ssh-agent relay (ssh-agent@1) and
+# persistent block volumes (volume@1) for the agent state that must survive `sbx rm` + `sbx create` under the same sandbox
 # name (agent-rebuild, restore of a deleted sandbox). sbx keys volume
 # storage on (owner, sandbox name, path) — NOT on this kit's identity — so
 # the kit can move or change without orphaning data.

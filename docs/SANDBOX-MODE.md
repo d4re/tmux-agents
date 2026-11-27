@@ -56,7 +56,7 @@ behavior matrix to settle before coding:
 
 | Consumer | container today | sandbox behavior |
 |---|---|---|
-| `agent-new` provisioning | `container.ensure_up` + SSH pump | `sandbox.ensure_daemon` + `ensure_up`; **no SSH pump** (sbx forwards the agent natively) |
+| `agent-new` provisioning | `container.ensure_up` + SSH pump | `sandbox.ensure_daemon` + `ensure_up`; **no SSH pump** (sbx relays the agent; the state kit declares `ssh-agent@1`) |
 | `agent-other` codex preflight | `command -v` in container | probe inside sandbox via `sandbox.exec_capture`, never on the host |
 | `agent-terminal` | shell into container | `sbx exec -it {name} bash` — a host shell would be a silent isolation hole |
 | `agent-vscode` | Dev Containers attach | Remote-SSH (`{name}.sbx`), host-folder fallback |
@@ -69,7 +69,13 @@ behavior matrix to settle before coding:
 | `agent-kill` guest cleanup | `docker exec` session dies with the pane | `reap_pane_agents`: killing the pane only kills the host `sbx exec` client — the guest agent survives — so kill terminates it in the VM (see `sandbox.py`) |
 
 `forward_ssh_agent` is defined as a no-op-with-warning in sandbox mode: sbx
-forwards the host agent natively, and the Docker SSH pump must never spawn.
+relays the host agent itself, and the Docker SSH pump must never spawn. Under
+v3 kits (sbx 0.55) the relay (`/run/ssh-agent.sock`, `SSH_AUTH_SOCK`) only
+starts when some kit declares `com.docker.sandbox/ssh-agent@1`. Neither the
+shell workload nor the agent mixins do, so the tmux-agents state kit
+declares it (`phase: runtime`). It takes effect only at create: `sbx kit add`
+on an existing sandbox sets `SSH_AUTH_SOCK` but never starts the relay, so
+an older sandbox needs `agent-rebuild`.
 
 ## projects.toml schema
 
@@ -232,7 +238,8 @@ sbx create --name <project> [-m <sbx_memory>] \
   `sbx/claude-mixin` on the `claude` workload — two providers of `claude`
   fail composition.
 - **State kit** (`sbx_kits/state/spec.yaml`, package data): persistent
-  volumes for agent state, see Rebuild semantics.
+  volumes for agent state (see Rebuild semantics), plus the `ssh-agent@1`
+  declaration that turns on the host ssh-agent relay.
 - **Project kits** (`sbx_kits`): v3 mixins only. Ordering between kits is
   the dependency graph, never flag order — a kit whose hooks must run
   after an agent mixin's (the dotfiles kit editing codex's `config.toml`)
